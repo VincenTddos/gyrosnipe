@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>GyroSnipe · MQTT over WebSocket 體感槍戰</title>
+<style>
+  :root{
+    --bg:#0a0e17; --panel:#121826; --line:#1f2937; --fg:#e5e7eb; --dim:#94a3b8;
+    --accent:#38bdf8; --danger:#ff5a5f; --ok:#34d399; --warn:#facc15;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;accent-color:var(--accent)}
+  input[type=range]{-webkit-appearance:none;appearance:none;background:#243044;height:6px;border-radius:3px;border:none}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;
+    background:var(--accent);border:none;cursor:pointer}
+  input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:var(--accent);border:none}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Noto Sans TC",system-ui,sans-serif;
+    overscroll-behavior:none}
+  body{overflow:hidden}
+  .screen{display:none;height:100dvh;width:100%}
+  .screen.on{display:flex}
+  button{font-family:inherit;font-size:15px;border:1px solid var(--line);background:var(--panel);
+    color:var(--fg);padding:12px 18px;border-radius:10px;cursor:pointer;transition:.12s}
+  button:hover{border-color:var(--accent)}
+  button:disabled{opacity:.35;cursor:not-allowed}
+  button.primary{background:var(--accent);color:#04121c;border-color:var(--accent);font-weight:700}
+  button.danger{background:var(--danger);color:#1a0405;border-color:var(--danger);font-weight:700}
+  input{font-family:inherit;font-size:15px;background:#0d121d;border:1px solid var(--line);
+    color:var(--fg);padding:12px 14px;border-radius:10px;width:100%}
+  input:focus{outline:none;border-color:var(--accent)}
+  .dim{color:var(--dim)}
+  .tiny{font-size:12px}
+
+  /* ---------- lobby ---------- */
+  #lobby{align-items:center;justify-content:center;padding:24px}
+  .card{width:100%;max-width:420px;background:var(--panel);border:1px solid var(--line);
+    border-radius:18px;padding:26px}
+  .logo{font-size:26px;font-weight:800;letter-spacing:.06em;margin:0 0 4px}
+  .logo span{color:var(--accent)}
+  .sub{margin:0 0 22px;font-size:12.5px;line-height:1.6}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:6px;letter-spacing:.08em}
+  .row{display:flex;gap:10px}
+  .row>*{flex:1}
+  .hr{height:1px;background:var(--line);margin:18px 0}
+  details summary{font-size:12px;color:var(--dim);cursor:pointer;list-style:none}
+  details summary::-webkit-details-marker{display:none}
+  details summary::before{content:"▸ ";}
+  details[open] summary::before{content:"▾ ";}
+
+  /* ---------- host ---------- */
+  #host{flex-direction:column}
+  #arenaWrap{flex:1;position:relative;min-height:0}
+  #arena{width:100%;height:100%;display:block}
+  .overlay{position:absolute;pointer-events:none}
+  #hostTop{top:0;left:0;right:0;display:flex;align-items:center;gap:16px;padding:14px 18px;
+    background:linear-gradient(#0a0e17ee,#0a0e1700)}
+  #hostTop .grow{flex:1}
+  .pill{background:#121826cc;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px}
+  #clock{font-size:30px;font-weight:800;letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  #hostBottom{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;align-items:center;
+    padding:14px 18px;background:linear-gradient(#0a0e1700,#0a0e17ee)}
+  #hostBottom button{pointer-events:auto}
+  #joinBox{position:absolute;right:18px;top:70px;width:250px;background:#121826ee;
+    border:1px solid var(--line);border-radius:14px;padding:16px;text-align:center}
+  #roomBig{font-size:38px;font-weight:800;letter-spacing:.16em;color:var(--accent);margin:2px 0 8px}
+  #qr{width:170px;height:170px;background:#fff;border-radius:8px;margin:6px auto 8px;display:block}
+  #joinUrl{font-size:10.5px;word-break:break-all;line-height:1.5}
+  #board{position:absolute;left:18px;top:70px;width:250px;background:#121826dd;
+    border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+  .brow{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px}
+  .swatch{width:10px;height:10px;border-radius:3px;flex:none}
+  .brow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .brow .sc{font-variant-numeric:tabular-nums;font-weight:700}
+  #stats{position:absolute;right:18px;bottom:70px;width:250px;background:#121826dd;
+    border:1px solid var(--line);border-radius:14px;padding:12px 14px;font-size:11.5px;line-height:1.85}
+  #stats b{color:var(--accent);font-variant-numeric:tabular-nums}
+  #toast{position:absolute;left:50%;top:46%;transform:translate(-50%,-50%);font-size:52px;
+    font-weight:800;letter-spacing:.05em;opacity:0;transition:opacity .3s}
+
+  /* ---------- player ---------- */
+  #player{flex-direction:column;padding:10px;gap:10px}
+  #pTop{display:flex;align-items:center;gap:8px;font-size:12px}
+  #pTop .grow{flex:1}
+  #pStat{display:flex;gap:10px;align-items:center;background:var(--panel);
+    border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+  #pStat .col{display:flex;flex-direction:column;gap:5px}
+  #pStat .lbl{font-size:10px;color:var(--dim);letter-spacing:.1em}
+  .pips{display:flex;gap:4px}
+  .pip{width:16px;height:9px;border-radius:2px;background:#243044}
+  .pip.hp{background:var(--ok)}
+  .pip.am{background:var(--warn)}
+  #pScore{margin-left:auto;text-align:right}
+  #pScoreVal{font-size:28px;font-weight:800;line-height:1}
+  #pad{flex:1;position:relative;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;touch-action:none;min-height:120px}
+  #padGrid{position:absolute;inset:0;opacity:.5;
+    background-image:linear-gradient(#1f2937 1px,transparent 1px),linear-gradient(90deg,#1f2937 1px,transparent 1px);
+    background-size:12.5% 25%}
+  #dot{position:absolute;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;
+    border:2px solid var(--accent);transition:none}
+  #dot::before,#dot::after{content:"";position:absolute;background:var(--accent)}
+  #dot::before{left:50%;top:-9px;width:2px;height:8px;margin-left:-1px}
+  #dot::after{left:50%;bottom:-9px;width:2px;height:8px;margin-left:-1px}
+  #padHint{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    text-align:center;font-size:12px;color:var(--dim);padding:20px;line-height:1.8}
+  #ctrl{display:flex;gap:10px;align-items:stretch}
+  #fire{flex:1;font-size:26px;font-weight:800;letter-spacing:.14em;padding:22px;
+    background:var(--danger);color:#1a0405;border-color:var(--danger)}
+  #fire:active{transform:scale(.97)}
+  #fire.reload{background:#243044;color:var(--dim);border-color:var(--line)}
+  #calib{width:104px;font-size:14px}
+  #sens{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim)}
+  #sens input{flex:1;padding:0}
+  #flash{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .18s}
+  #pMsg{position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);font-size:34px;
+    font-weight:800;opacity:0;transition:opacity .25s;pointer-events:none;text-align:center}
+  .dot-c{width:8px;height:8px;border-radius:50%;background:var(--danger);flex:none}
+  .dot-c.ok{background:var(--ok)}
+</style>
+</head>
+<body>
+
+<!-- ============ LOBBY ============ -->
+<section id="lobby" class="screen on">
+  <div class="card">
+    <h1 class="logo">GYRO<span>SNIPE</span></h1>
+    <p class="sub dim">手機就是槍：轉動手機瞄準，點擊開火。<br>
+      瞄準向量走 MQTT QoS 0，開火事件走 QoS 1，房主端負責命中判定。</p>
+
+    <div class="field">
+      <label>你的暱稱</label>
+      <input id="inName" maxlength="10" placeholder="輸入 1~10 個字">
+    </div>
+    <div class="field">
+      <label>房間碼</label>
+      <input id="inRoom" maxlength="5" placeholder="加入請輸入 5 碼，開房可留空">
+    </div>
+
+    <div class="row" style="margin-top:18px">
+      <button id="btnJoin" class="primary">加入戰場</button>
+      <button id="btnHost">開房（大螢幕）</button>
+    </div>
+
+    <div class="hr"></div>
+    <details>
+      <summary>進階設定</summary>
+      <div class="field" style="margin-top:12px">
+        <label>MQTT Broker（WebSocket）</label>
+        <input id="inBroker" value="wss://broker.emqx.io:8084/mqtt">
+      </div>
+      <p class="tiny dim" style="margin:0;line-height:1.7">
+        公用 broker 僅供開發測試。正式展示建議自架 Mosquitto／EMQX 並開啟 WebSocket listener，
+        避免外人誤入同名房間。
+      </p>
+    </details>
+    <p class="tiny dim" style="margin:16px 0 0;line-height:1.7">
+      ※ 陀螺儀需要 HTTPS 才能啟用。用 GitHub Pages／Cloudflare Pages 部署後再用手機開。
+      沒有陀螺儀（或用電腦測試）時會自動改用觸控／滑鼠瞄準。
+    </p>
+  </div>
+</section>
+
+<!-- ============ HOST ============ -->
+<section id="host" class="screen">
+  <div id="arenaWrap">
+    <canvas id="arena"></canvas>
+
+    <div class="overlay" id="hostTop">
+      <div class="pill">房間 <b id="roomTop">-----</b></div>
+      <div class="pill"><span id="hostConn">連線中…</span></div>
+      <div class="pill">在線 <b id="pcount">0</b></div>
+      <div class="grow"></div>
+      <div id="clock">3:00</div>
+    </div>
+
+    <div class="overlay" id="board"></div>
+
+    <div class="overlay" id="joinBox">
+      <div class="tiny dim">手機掃描加入</div>
+      <div id="roomBig">-----</div>
+      <img id="qr" alt="QR">
+      <div id="joinUrl" class="dim"></div>
+    </div>
+
+    <div class="overlay" id="stats"></div>
+    <div class="overlay" id="toast"></div>
+
+    <div id="hostBottom">
+      <button id="btnStart" class="primary">開始遊戲</button>
+      <button id="btnReset">重設分數</button>
+      <button id="btnPanels">隱藏面板</button>
+      <div style="flex:1"></div>
+      <span class="tiny dim">房主端負責所有命中判定，玩家端只送輸入</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ PLAYER ============ -->
+<section id="player" class="screen">
+  <div id="pTop">
+    <span class="dot-c" id="pDot"></span>
+    <span id="pConn" class="dim">連線中…</span>
+    <span class="grow"></span>
+    <span class="dim">房間 <b id="pRoom">-----</b></span>
+    <span class="dim">RTT <b id="pRtt">--</b>ms</span>
+  </div>
+
+  <div id="pStat">
+    <div class="col">
+      <span class="lbl">HP</span>
+      <div class="pips" id="pHp"></div>
+    </div>
+    <div class="col">
+      <span class="lbl">AMMO</span>
+      <div class="pips" id="pAmmo"></div>
+    </div>
+    <div class="col" id="pScore">
+      <span class="lbl">SCORE</span>
+      <span id="pScoreVal">0</span>
+    </div>
+  </div>
+
+  <div id="pad">
+    <div id="padGrid"></div>
+    <div id="dot" style="left:50%;top:50%"></div>
+    <div id="padHint">按下方「校準」把手機朝向大螢幕中央<br>之後轉動手機就能瞄準</div>
+  </div>
+
+  <div id="sens">靈敏度 <input id="inSens" type="range" min="20" max="110" value="55"> <span id="sensVal">55°</span></div>
+
+  <div id="ctrl">
+    <button id="calib">校準</button>
+    <button id="fire">FIRE</button>
+  </div>
+</section>
+
+<div id="flash"></div>
+<div id="pMsg"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>window.mqtt||document.write('<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"><\/script>');</script>
+<script>
+"use strict";
+/* =========================================================================
+   GyroSnipe — MQTT over WebSocket 體感槍戰
+   -------------------------------------------------------------------------
+   Topic 設計（NS = 命名空間，room = 房間碼）
+     up  (玩家 → 房主)
+       NS/room/up/join/{id}   QoS1            報到
+       NS/room/up/aim/{id}    QoS0   20Hz     瞄準向量 "x,y"（掉了無所謂）
+       NS/room/up/fire/{id}   QoS1            開火（不可掉）
+       NS/room/up/ping/{id}   QoS0            RTT 量測
+       NS/room/up/leave/{id}  QoS1  [LWT]     斷線遺言
+     dn  (房主 → 玩家)
+       NS/room/dn/host        QoS1 retained [LWT]  房主 online/offline
+       NS/room/dn/meta        QoS1 retained  1Hz   階段、剩餘時間、名單
+       NS/room/dn/hud         QoS0          10Hz   HP/彈藥/分數
+       NS/room/dn/event       QoS1                 命中、擊倒、結束
+       NS/room/dn/pong/{id}   QoS0                 RTT 回應
+   房主訂閱 NS/room/up/#（單一 wildcard 訂閱）
+   ========================================================================= */
+
+const NS         = 'ntub-iot-gyrosnipe';
+const MAG        = 6;        // 彈匣容量
+const RELOAD_MS  = 1500;     // 換彈時間
+const FIRE_CD    = 220;      // 開火冷卻
+const MAX_HP     = 3;
+const RESPAWN_MS = 3000;
+const ROUND_S    = 180;
+const HIT_R      = 0.052;    // 命中半徑（螢幕寬度比例）
+const AIM_MS     = 50;       // 20Hz
+const HUD_MS     = 100;      // 10Hz
+const META_MS    = 1000;     // 1Hz
+const TIMEOUT_MS = 8000;     // 玩家無訊號逾時
+const COLORS = ['#ff5a5f','#38bdf8','#facc15','#a78bfa','#34d399','#fb923c','#f472b6','#22d3ee'];
+
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+const now = () => Date.now();
+
+/* ---------- 流量統計 ---------- */
+const net = { inMsg:0, outMsg:0, inB:0, outB:0, _t:now(), inRate:0, outRate:0, bRate:0 };
+function netTick(){
+  const dt = (now()-net._t)/1000;
+  if(dt >= 1){
+    net.inRate  = Math.round(net.inMsg/dt);
+    net.outRate = Math.round(net.outMsg/dt);
+    net.bRate   = Math.round((net.inB+net.outB)/dt);
+    net.inMsg = net.outMsg = net.inB = net.outB = 0;
+    net._t = now();
+  }
+}
+setInterval(netTick, 250);
+
+/* ---------- MQTT ---------- */
+let client = null, ROOM = '', MYID = '', MYNAME = '';
+const T = {
+  host : () => `${NS}/${ROOM}/dn/host`,
+  meta : () => `${NS}/${ROOM}/dn/meta`,
+  hud  : () => `${NS}/${ROOM}/dn/hud`,
+  event: () => `${NS}/${ROOM}/dn/event`,
+  pong : id => `${NS}/${ROOM}/dn/pong/${id}`,
+  up   : () => `${NS}/${ROOM}/up/#`,
+  ujoin: id => `${NS}/${ROOM}/up/join/${id}`,
+  uaim : id => `${NS}/${ROOM}/up/aim/${id}`,
+  ufire: id => `${NS}/${ROOM}/up/fire/${id}`,
+  uping: id => `${NS}/${ROOM}/up/ping/${id}`,
+  uleft: id => `${NS}/${ROOM}/up/leave/${id}`,
+};
+function pub(topic, payload, opts){
+  if(!client || !client.connected) return;
+  const s = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  net.outMsg++; net.outB += s.length + topic.length;
+  client.publish(topic, s, opts || {qos:0});
+}
+function connect(url, will, onReady, onMsg, onState){
+  client = mqtt.connect(url, {
+    clientId: 'gs_' + MYID,
+    clean: true,
+    keepalive: 20,
+    reconnectPeriod: 2000,
+    connectTimeout: 8000,
+    will: will || undefined,
+  });
+  client.on('connect',    () => { onState('已連線', true);  onReady(); });
+  client.on('reconnect',  () => onState('重新連線中…', false));
+  client.on('close',      () => onState('連線中斷', false));
+  client.on('error',   e  => onState('錯誤：' + e.message, false));
+  client.on('message', (topic, buf) => {
+    net.inMsg++; net.inB += buf.length + topic.length;
+    onMsg(topic, buf.toString());
+  });
+}
+MYID = Math.random().toString(36).slice(2,8);
+const randRoom = () => Array.from({length:5}, () =>
+  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random()*32)]).join('');
+
+/* =========================================================================
+   LOBBY
+   ========================================================================= */
+$('inRoom').value = (new URLSearchParams(location.search).get('r') || '').toUpperCase();
+$('inName').value = localStorage.getItem('gs_name') || '';
+$('inRoom').addEventListener('input', e => e.target.value = e.target.value.toUpperCase());
+
+$('btnJoin').onclick = () => {
+  const name = ($('inName').value || '').trim().slice(0,10);
+  const room = ($('inRoom').value || '').trim().toUpperCase();
+  if(!name) return alert('請輸入暱稱');
+  if(room.length !== 5) return alert('請輸入 5 碼房間碼');
+  localStorage.setItem('gs_name', name);
+  MYNAME = name; ROOM = room;
+  startPlayer();
+};
+$('btnHost').onclick = () => {
+  ROOM = ($('inRoom').value || '').trim().toUpperCase() || randRoom();
+  startHost();
+};
+function show(id){ document.querySelectorAll('.screen').forEach(s => s.classList.toggle('on', s.id===id)); }
+
+/* =========================================================================
+   HOST — 房主端：戰場、命中判定、計分
+   ========================================================================= */
+const H = { players:new Map(), phase:'lobby', endAt:0, fx:[], seat:0 };
+
+function startHost(){
+  show('host');
+  $('roomTop').textContent = ROOM;
+  $('roomBig').textContent = ROOM;
+  const url = location.origin + location.pathname + '?r=' + ROOM;
+  $('joinUrl').textContent = url;
+  const qr = $('qr');
+  qr.src = 'https://api.qrserver.com/v1/create-qr-code/?size=340x340&margin=8&data=' + encodeURIComponent(url);
+  qr.onerror = () => { qr.style.display = 'none'; };
+
+  connect($('inBroker').value.trim(),
+    { topic:T.host(), payload:'offline', qos:1, retain:true },
+    () => {
+      client.subscribe(T.up(), {qos:1});
+      pub(T.host(), 'online', {qos:1, retain:true});
+      pushMeta();
+    },
+    hostMsg,
+    (txt, ok) => { $('hostConn').textContent = txt; $('hostConn').style.color = ok ? 'var(--ok)' : 'var(--danger)'; }
+  );
+
+  setInterval(hostTick, 50);
+  setInterval(pushHud, HUD_MS);
+  setInterval(pushMeta, META_MS);
+  requestAnimationFrame(render);
+}
+
+function hostMsg(topic, msg){
+  const seg = topic.split('/');            // NS/room/up/<kind>/<id>
+  const kind = seg[3], id = seg[4];
+  if(kind === 'join'){
+    let p = H.players.get(id);
+    if(!p){
+      p = { id, name:(msg||'?').slice(0,10), color:COLORS[H.seat++ % COLORS.length],
+            x:.5, y:.5, hp:MAX_HP, ammo:MAG, score:0, combo:0,
+            reloadAt:0, downAt:0, lastFire:0, seen:now() };
+      H.players.set(id, p);
+      toast(p.name + ' 加入', p.color);
+    } else { p.name = (msg||p.name).slice(0,10); p.seen = now(); }
+    pushMeta();
+  }
+  else if(kind === 'aim'){
+    const p = H.players.get(id); if(!p) return;
+    const c = msg.split(',');
+    p.x = clamp(parseFloat(c[0])||.5, 0, 1);
+    p.y = clamp(parseFloat(c[1])||.5, 0, 1);
+    p.seen = now();
+  }
+  else if(kind === 'fire'){
+    const p = H.players.get(id); if(!p) return;
+    p.seen = now();
+    let d; try{ d = JSON.parse(msg); }catch(e){ return; }
+    resolveFire(p, clamp(d.x,0,1), clamp(d.y,0,1));
+  }
+  else if(kind === 'ping'){
+    pub(T.pong(id), msg, {qos:0});
+  }
+  else if(kind === 'leave'){
+    const p = H.players.get(id);
+    if(p){ H.players.delete(id); toast(p.name + ' 離線', '#94a3b8'); pushMeta(); }
+  }
+}
+
+/* 命中判定：一律由房主計算，玩家端送的只有「我朝這裡開了一槍」 */
+function resolveFire(p, x, y){
+  const t = now();
+  if(p.hp <= 0 || t < p.downAt)  return;
+  if(t < p.reloadAt)             return;
+  if(t - p.lastFire < FIRE_CD)   return;
+  if(p.ammo <= 0){ p.reloadAt = t + RELOAD_MS; p.ammo = 0; return; }
+
+  p.lastFire = t; p.ammo--;
+  if(p.ammo === 0) p.reloadAt = t + RELOAD_MS;
+  H.fx.push({ type:'shot', x, y, color:p.color, born:t });
+  if(H.phase !== 'playing') return;   // 開始前可自由試射，但不計分
+
+  // 找最近的合法目標
+  let best = null, bestD = HIT_R;
+  for(const q of H.players.values()){
+    if(q.id === p.id || q.hp <= 0 || t < q.downAt) continue;
+    const dx = q.x - x, dy = (q.y - y) * 9/16;
+    const d = Math.hypot(dx, dy);
+    if(d < bestD){ bestD = d; best = q; }
+  }
+  if(!best){ p.combo = 0; return; }
+
+  best.hp--;
+  p.combo++;
+  const gain = 10 + (p.combo - 1) * 5;
+  p.score += gain;
+  H.fx.push({ type:'hit', x:best.x, y:best.y, color:p.color, born:t, txt:'+' + gain });
+  const ev = { t:'hit', by:p.id, byName:p.name, on:best.id, onName:best.name, gain };
+
+  if(best.hp <= 0){
+    best.downAt = t + RESPAWN_MS;
+    best.hp = 0;
+    p.score += 20;
+    ev.t = 'down'; ev.bonus = 20;
+    toast(p.name + ' 擊倒 ' + best.name, p.color);
+  }
+  pub(T.event(), ev, {qos:1});
+}
+
+function hostTick(){
+  const t = now();
+  for(const [id,p] of H.players){
+    if(t - p.seen > TIMEOUT_MS){ H.players.delete(id); pushMeta(); continue; }
+    if(p.reloadAt && t >= p.reloadAt){ p.ammo = MAG; p.reloadAt = 0; }
+    if(p.downAt   && t >= p.downAt)  { p.hp = MAX_HP; p.downAt = 0; p.ammo = MAG; p.reloadAt = 0; }
+  }
+  if(H.phase === 'playing' && t >= H.endAt){
+    H.phase = 'over';
+    const rank = [...H.players.values()].sort((a,b) => b.score - a.score);
+    pub(T.event(), { t:'over', win: rank[0] ? rank[0].name : '—' }, {qos:1});
+    toast('遊戲結束　' + (rank[0] ? rank[0].name + ' 獲勝' : ''), 'var(--warn)');
+    pushMeta();
+  }
+  H.fx = H.fx.filter(f => t - f.born < 700);
+  $('pcount').textContent = H.players.size;
+  $('clock').textContent = fmt(H.phase === 'playing' ? Math.max(0, H.endAt - t) / 1000 : (H.phase==='over'?0:ROUND_S));
+}
+const fmt = s => Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0');
+
+/* QoS 0 高頻 HUD：掉一包沒差，下一包 100ms 後就到 */
+function pushHud(){
+  if(!H.players.size) return;
+  const t = now();
+  const rows = [];
+  for(const p of H.players.values()){
+    const st = p.downAt > t ? 2 : (p.reloadAt > t ? 1 : 0);
+    rows.push([p.id, p.hp, p.ammo, p.score, st].join(','));
+  }
+  pub(T.hud(), rows.join(';'), {qos:0});
+}
+/* QoS 1 + retained：中途加入的手機一連上就拿到目前狀態 */
+function pushMeta(){
+  pub(T.meta(), {
+    phase: H.phase,
+    left : H.phase === 'playing' ? Math.max(0, Math.round((H.endAt - now())/1000)) : ROUND_S,
+    players: [...H.players.values()].map(p => ({ id:p.id, n:p.name, c:p.color, s:p.score })),
+  }, {qos:1, retain:true});
+}
+
+$('btnStart').onclick = () => {
+  H.phase = 'playing';
+  H.endAt = now() + ROUND_S * 1000;
+  for(const p of H.players.values()){
+    p.hp = MAX_HP; p.ammo = MAG; p.score = 0; p.combo = 0; p.downAt = 0; p.reloadAt = 0;
+  }
+  pushMeta();
+  pub(T.event(), {t:'start'}, {qos:1});
+  toast('開始！', 'var(--ok)');
+};
+$('btnReset').onclick = () => {
+  H.phase = 'lobby';
+  for(const p of H.players.values()){ p.score = 0; p.hp = MAX_HP; p.ammo = MAG; p.combo = 0; }
+  pushMeta();
+};
+let panels = true;
+$('btnPanels').onclick = () => {
+  panels = !panels;
+  ['board','joinBox','stats'].forEach(id => $(id).style.display = panels ? '' : 'none');
+  $('btnPanels').textContent = panels ? '隱藏面板' : '顯示面板';
+};
+
+/* ---------- 戰場渲染 ---------- */
+const cv = $('arena'), cx = cv.getContext('2d');
+function fitCanvas(){
+  const r = cv.getBoundingClientRect(), dpr = Math.min(devicePixelRatio||1, 2);
+  cv.width = r.width*dpr; cv.height = r.height*dpr;
+  cx.setTransform(dpr,0,0,dpr,0,0);
+}
+addEventListener('resize', fitCanvas);
+
+function render(){
+  requestAnimationFrame(render);
+  if(!cv.clientWidth) return;
+  if(cv.width !== Math.round(cv.clientWidth*Math.min(devicePixelRatio||1,2))) fitCanvas();
+  const W = cv.clientWidth, Hh = cv.clientHeight, t = now();
+
+  cx.fillStyle = '#0a0e17'; cx.fillRect(0,0,W,Hh);
+  cx.strokeStyle = '#141c2b'; cx.lineWidth = 1;
+  for(let i=1;i<16;i++){ const x=W*i/16|0; cx.beginPath(); cx.moveTo(x+.5,0); cx.lineTo(x+.5,Hh); cx.stroke(); }
+  for(let i=1;i<9;i++){  const y=Hh*i/9|0; cx.beginPath(); cx.moveTo(0,y+.5); cx.lineTo(W,y+.5); cx.stroke(); }
+  // 中心參考點：玩家校準時朝這裡
+  cx.strokeStyle = '#233047'; cx.lineWidth = 2;
+  cx.beginPath(); cx.arc(W/2, Hh/2, 46, 0, 7); cx.stroke();
+  cx.beginPath(); cx.moveTo(W/2-70,Hh/2); cx.lineTo(W/2-56,Hh/2);
+  cx.moveTo(W/2+56,Hh/2); cx.lineTo(W/2+70,Hh/2);
+  cx.moveTo(W/2,Hh/2-70); cx.lineTo(W/2,Hh/2-56);
+  cx.moveTo(W/2,Hh/2+56); cx.lineTo(W/2,Hh/2+70); cx.stroke();
+  cx.fillStyle = '#2b3a55'; cx.font = '600 11px ui-monospace,monospace'; cx.textAlign = 'center';
+  cx.fillText('校準基準點', W/2, Hh/2 + 92);
+
+  // 特效
+  for(const f of H.fx){
+    const age = (t - f.born) / 700, a = 1 - age;
+    const x = f.x*W, y = f.y*Hh;
+    cx.globalAlpha = a;
+    if(f.type === 'shot'){
+      cx.strokeStyle = f.color; cx.lineWidth = 2;
+      cx.beginPath(); cx.arc(x, y, 10 + age*46, 0, 7); cx.stroke();
+    } else {
+      cx.fillStyle = f.color;
+      cx.beginPath(); cx.arc(x, y, 26*(1-age)+6, 0, 7); cx.fill();
+      cx.font = '700 22px ui-monospace,monospace'; cx.textAlign = 'center';
+      cx.fillText(f.txt, x, y - 34 - age*26);
+    }
+    cx.globalAlpha = 1;
+  }
+
+  // 準心
+  for(const p of H.players.values()){
+    const x = p.x*W, y = p.y*Hh, down = p.downAt > t, rel = p.reloadAt > t;
+    cx.globalAlpha = down ? .28 : 1;
+    cx.strokeStyle = p.color; cx.lineWidth = 2.5;
+    cx.beginPath(); cx.arc(x, y, 20, 0, 7); cx.stroke();
+    cx.beginPath();
+    cx.moveTo(x-32,y); cx.lineTo(x-9,y); cx.moveTo(x+9,y); cx.lineTo(x+32,y);
+    cx.moveTo(x,y-32); cx.lineTo(x,y-9); cx.moveTo(x,y+9); cx.lineTo(x,y+32);
+    cx.stroke();
+    cx.fillStyle = p.color;
+    cx.beginPath(); cx.arc(x, y, 3, 0, 7); cx.fill();
+
+    cx.font = '600 13px ui-monospace,monospace'; cx.textAlign = 'center';
+    cx.fillText(p.name, x, y + 52);
+    for(let i=0;i<MAX_HP;i++){
+      cx.fillStyle = i < p.hp ? p.color : '#2a3548';
+      cx.fillRect(x - 17 + i*12, y + 60, 9, 4);
+    }
+    if(rel && !down){
+      cx.fillStyle = '#facc15'; cx.font = '600 11px ui-monospace,monospace';
+      cx.fillText('RELOAD', x, y - 40);
+    }
+    if(down){
+      cx.globalAlpha = 1; cx.fillStyle = '#94a3b8'; cx.font = '700 13px ui-monospace,monospace';
+      cx.fillText(Math.ceil((p.downAt - t)/1000) + 's', x, y - 40);
+    }
+    cx.globalAlpha = 1;
+  }
+  drawBoard(); drawStats();
+}
+
+function drawBoard(){
+  const rank = [...H.players.values()].sort((a,b) => b.score - a.score);
+  $('board').innerHTML = rank.length
+    ? rank.map((p,i) => `<div class="brow"><span class="dim" style="width:14px">${i+1}</span>
+        <span class="swatch" style="background:${p.color}"></span>
+        <span class="nm">${esc(p.name)}</span><span class="sc">${p.score}</span></div>`).join('')
+    : '<div class="tiny dim" style="padding:6px 0;line-height:1.8">等待玩家加入…<br>用手機掃右邊的 QR</div>';
+}
+function drawStats(){
+  $('stats').innerHTML =
+    `<div class="dim" style="letter-spacing:.1em;margin-bottom:4px">MQTT 即時統計</div>
+     收 <b>${net.inRate}</b> msg/s ・ 送 <b>${net.outRate}</b> msg/s<br>
+     流量 <b>${(net.bRate/1024).toFixed(1)}</b> KB/s<br>
+     玩家 <b>${H.players.size}</b> ・ 瞄準 <b>20</b>Hz ・ HUD <b>10</b>Hz<br>
+     <span class="dim">aim=QoS0　fire/event=QoS1　meta=retained</span>`;
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let toastT = 0;
+function toast(txt, color){
+  const el = $('toast');
+  el.textContent = txt; el.style.color = color || 'var(--fg)'; el.style.opacity = 1;
+  clearTimeout(toastT); toastT = setTimeout(() => el.style.opacity = 0, 1400);
+}
+
+/* =========================================================================
+   PLAYER — 手機端：陀螺儀瞄準 + 開火
+   ========================================================================= */
+const P = {
+  aimX:.5, aimY:.5, hp:MAX_HP, ammo:MAG, score:0, st:0,
+  base:null, alpha:0, beta:0, gyro:false, fov:55, lastFire:0, names:{}
+};
+
+function startPlayer(){
+  show('player');
+  $('pRoom').textContent = ROOM;
+  renderPips();
+
+  connect($('inBroker').value.trim(),
+    { topic:T.uleft(MYID), payload:'', qos:1 },   // LWT：斷線時房主立刻知道
+    () => {
+      // 訂閱房主廣播
+      client.subscribe([T.meta(), T.hud(), T.event(), T.host()], {qos:1});
+      client.subscribe(T.pong(MYID), {qos:0});
+      pub(T.ujoin(MYID), MYNAME, {qos:1});
+    },
+    playerMsg,
+    (txt, ok) => { $('pConn').textContent = txt; $('pDot').classList.toggle('ok', ok); }
+  );
+
+  addEventListener('pagehide', () => pub(T.uleft(MYID), '', {qos:1}));
+
+  setInterval(() => pub(T.uaim(MYID), P.aimX.toFixed(4) + ',' + P.aimY.toFixed(4), {qos:0}), AIM_MS);
+  setInterval(() => pub(T.uping(MYID), String(now()), {qos:0}), 2000);
+  setInterval(() => pub(T.ujoin(MYID), MYNAME, {qos:1}), 5000);   // 心跳兼重連補報到
+  requestAnimationFrame(paintDot);
+}
+
+function playerMsg(topic, msg){
+  if(topic === T.hud()){
+    for(const row of msg.split(';')){
+      const f = row.split(',');
+      if(f[0] !== MYID) continue;
+      P.hp = +f[1]; P.ammo = +f[2]; P.score = +f[3]; P.st = +f[4];
+      renderPips();
+    }
+  }
+  else if(topic === T.meta()){
+    let m; try{ m = JSON.parse(msg); }catch(e){ return; }
+    m.players.forEach(p => P.names[p.id] = p.n);
+    if(m.phase === 'playing') $('pConn').textContent = '戰鬥中 ' + fmt(m.left);
+  }
+  else if(topic === T.event()){
+    let e; try{ e = JSON.parse(msg); }catch(x){ return; }
+    if(e.by === MYID)      { flash('#34d399'); msgBig((e.t==='down'?'擊倒！+':'命中 +') + (e.gain + (e.bonus||0)), '#34d399'); }
+    else if(e.on === MYID) { flash('#ff5a5f'); msgBig(e.t==='down' ? '被擊倒' : '被命中', '#ff5a5f'); vib(120); }
+    else if(e.t === 'start'){ msgBig('開始！', '#38bdf8'); }
+    else if(e.t === 'over') { msgBig('結束 · ' + e.win + ' 獲勝', '#facc15'); }
+  }
+  else if(topic === T.pong(MYID)){
+    $('pRtt').textContent = now() - (+msg);
+  }
+  else if(topic === T.host()){
+    if(msg === 'offline'){ $('pConn').textContent = '房主離線'; msgBig('房主離線', '#ff5a5f'); }
+  }
+}
+
+/* ---------- 陀螺儀 ---------- */
+function onOrient(e){
+  if(e.alpha == null) return;
+  P.gyro = true;
+  $('padHint').style.display = P.base ? 'none' : '';
+  P.alpha = e.alpha; P.beta = e.beta;
+  if(!P.base) return;
+  const da = ((e.alpha - P.base.a + 540) % 360) - 180;   // 左右（yaw）
+  const db = e.beta - P.base.b;                          // 上下（pitch）
+  P.aimX = clamp(0.5 - da / P.fov, 0, 1);
+  P.aimY = clamp(0.5 - db / (P.fov * 9/16), 0, 1);
+}
+function enableGyro(){
+  const D = window.DeviceOrientationEvent;
+  if(!D) return false;
+  if(typeof D.requestPermission === 'function'){          // iOS 13+
+    D.requestPermission().then(r => {
+      if(r === 'granted') addEventListener('deviceorientation', onOrient);
+      else alert('未授權動作感測，將改用觸控瞄準');
+    }).catch(() => {});
+  } else {
+    addEventListener('deviceorientation', onOrient);
+  }
+  return true;
+}
+$('calib').onclick = () => {
+  enableGyro();
+  setTimeout(() => {
+    if(P.gyro){
+      P.base = { a:P.alpha, b:P.beta };
+      P.aimX = P.aimY = .5;
+      $('padHint').style.display = 'none';
+      msgBig('已校準', '#38bdf8'); vib(40);
+    } else {
+      $('padHint').innerHTML = '這台裝置沒有可用的陀螺儀<br>直接在這個區域拖曳來瞄準';
+    }
+  }, 260);
+};
+$('inSens').oninput = e => { P.fov = +e.target.value; $('sensVal').textContent = P.fov + '°'; };
+
+/* ---------- 觸控／滑鼠備援 ---------- */
+const pad = $('pad');
+function padAim(ev){
+  const r = pad.getBoundingClientRect();
+  const pt = ev.touches ? ev.touches[0] : ev;
+  P.aimX = clamp((pt.clientX - r.left) / r.width, 0, 1);
+  P.aimY = clamp((pt.clientY - r.top) / r.height, 0, 1);
+  $('padHint').style.display = 'none';
+  ev.preventDefault();
+}
+let dragging = false;
+pad.addEventListener('pointerdown', e => { dragging = true; pad.setPointerCapture(e.pointerId); padAim(e); });
+pad.addEventListener('pointermove', e => { if(dragging) padAim(e); });
+['pointerup','pointercancel','pointerleave'].forEach(ev =>
+  pad.addEventListener(ev, () => dragging = false));
+
+/* ---------- 開火 ---------- */
+function doFire(){
+  const t = now();
+  if(t - P.lastFire < FIRE_CD) return;
+  P.lastFire = t;
+  // 客戶端預測：先把子彈扣掉，房主的 HUD 會在 100ms 內修正回來
+  if(P.ammo > 0 && P.st === 0){ P.ammo--; renderPips(); vib(25); }
+  pub(T.ufire(MYID), { x:+P.aimX.toFixed(4), y:+P.aimY.toFixed(4) }, {qos:1});
+}
+$('fire').addEventListener('pointerdown', e => { e.preventDefault(); doFire(); });
+addEventListener('keydown', e => { if(e.code === 'Space' && $('player').classList.contains('on')){ e.preventDefault(); doFire(); } });
+
+/* ---------- 手機 HUD ---------- */
+function renderPips(){
+  const hp = $('pHp'), am = $('pAmmo');
+  if(hp.children.length !== MAX_HP){ hp.innerHTML = '<div class="pip"></div>'.repeat(MAX_HP); }
+  if(am.children.length !== MAG)   { am.innerHTML = '<div class="pip"></div>'.repeat(MAG); }
+  [...hp.children].forEach((el,i) => el.className = 'pip' + (i < P.hp ? ' hp' : ''));
+  [...am.children].forEach((el,i) => el.className = 'pip' + (i < P.ammo ? ' am' : ''));
+  $('pScoreVal').textContent = P.score;
+  const f = $('fire');
+  const reloading = P.st === 1 || P.ammo === 0, down = P.st === 2;
+  f.classList.toggle('reload', reloading || down);
+  f.textContent = down ? '陣亡' : (reloading ? '換彈中' : 'FIRE');
+}
+function paintDot(){
+  requestAnimationFrame(paintDot);
+  $('dot').style.left = (P.aimX*100) + '%';
+  $('dot').style.top  = (P.aimY*100) + '%';
+}
+let flashT = 0, msgT = 0;
+function flash(c){
+  const el = $('flash');
+  el.style.background = c; el.style.opacity = .28;
+  clearTimeout(flashT); flashT = setTimeout(() => el.style.opacity = 0, 130);
+}
+function msgBig(txt, c){
+  const el = $('pMsg');
+  el.textContent = txt; el.style.color = c; el.style.opacity = 1;
+  clearTimeout(msgT); msgT = setTimeout(() => el.style.opacity = 0, 900);
+}
+const vib = ms => navigator.vibrate && navigator.vibrate(ms);
+</script>
+</body>
+</html>
