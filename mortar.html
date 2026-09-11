@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>GyroMortar · MQTT 回合制砲擊對戰</title>
+<style>
+  :root{
+    --bg:#0b1020; --panel:#141b2d; --line:#232f47; --fg:#e7ecf3; --dim:#93a2bb;
+    --accent:#4cc9f0; --danger:#ff6b6b; --ok:#4ade80; --warn:#fbbf24;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;accent-color:var(--accent)}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Noto Sans TC",system-ui,sans-serif;
+    overscroll-behavior:none}
+  body{overflow:hidden}
+  .screen{display:none;height:100dvh;width:100%}
+  .screen.on{display:flex}
+  button{font-family:inherit;font-size:15px;border:1px solid var(--line);background:var(--panel);
+    color:var(--fg);padding:12px 18px;border-radius:10px;cursor:pointer;transition:.12s}
+  button:hover{border-color:var(--accent)}
+  button:disabled{opacity:.32;cursor:not-allowed}
+  button.primary{background:var(--accent);color:#04121c;border-color:var(--accent);font-weight:700}
+  input{font-family:inherit;font-size:15px;background:#0d1526;border:1px solid var(--line);
+    color:var(--fg);padding:12px 14px;border-radius:10px;width:100%}
+  input:focus{outline:none;border-color:var(--accent)}
+  .dim{color:var(--dim)} .tiny{font-size:12px}
+
+  /* lobby */
+  #lobby{align-items:center;justify-content:center;padding:24px}
+  .card{width:100%;max-width:430px;background:var(--panel);border:1px solid var(--line);
+    border-radius:18px;padding:26px}
+  .logo{font-size:26px;font-weight:800;letter-spacing:.06em;margin:0 0 4px}
+  .logo span{color:var(--accent)}
+  .sub{margin:0 0 22px;font-size:12.5px;line-height:1.7}
+  .field{margin-bottom:12px}
+  .field label{display:block;font-size:11.5px;color:var(--dim);margin-bottom:6px;letter-spacing:.08em}
+  .row{display:flex;gap:10px} .row>*{flex:1}
+  .hr{height:1px;background:var(--line);margin:18px 0}
+  details summary{font-size:12px;color:var(--dim);cursor:pointer;list-style:none}
+  details summary::-webkit-details-marker{display:none}
+  details summary::before{content:"▸ "} details[open] summary::before{content:"▾ "}
+
+  /* host */
+  #host{flex-direction:column}
+  #arenaWrap{flex:1;position:relative;min-height:0}
+  #arena{width:100%;height:100%;display:block}
+  .ov{position:absolute;pointer-events:none}
+  #hTop{top:0;left:0;right:0;display:flex;align-items:center;gap:14px;padding:14px 18px;
+    background:linear-gradient(#0b1020ee,#0b102000)}
+  .pill{background:#141b2dcc;border:1px solid var(--line);border-radius:999px;padding:6px 14px;font-size:13px}
+  #phaseBig{margin-left:auto;font-size:26px;font-weight:800;letter-spacing:.05em;font-variant-numeric:tabular-nums}
+  #board{left:18px;top:68px;width:250px;background:#141b2ddd;border:1px solid var(--line);
+    border-radius:14px;padding:11px 13px}
+  .brow{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12.5px}
+  .sw{width:10px;height:10px;border-radius:3px;flex:none}
+  .brow .nm{width:62px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hpbar{flex:1;height:7px;background:#243044;border-radius:4px;overflow:hidden}
+  .hpbar i{display:block;height:100%;border-radius:4px}
+  .rdy{font-size:10px;width:30px;text-align:right}
+  #joinBox{right:18px;top:68px;width:236px;background:#141b2dee;border:1px solid var(--line);
+    border-radius:14px;padding:15px;text-align:center}
+  #roomBig{font-size:34px;font-weight:800;letter-spacing:.16em;color:var(--accent);margin:2px 0 8px}
+  #qr{width:160px;height:160px;background:#fff;border-radius:8px;margin:4px auto 8px;display:block}
+  #joinUrl{font-size:10px;word-break:break-all;line-height:1.5}
+  #stats{font-size:11.5px;line-height:1.5;pointer-events:none}
+  #stats b{color:var(--accent);font-variant-numeric:tabular-nums}
+  #toast{left:50%;top:42%;transform:translate(-50%,-50%);font-size:46px;font-weight:800;
+    opacity:0;transition:opacity .3s;text-align:center;line-height:1.3}
+  #hBot{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;align-items:center;
+    padding:14px 18px;background:linear-gradient(#0b102000,#0b1020ee)}
+  #hBot button{pointer-events:auto}
+
+  /* player */
+  #player{flex-direction:column;padding:10px;gap:9px}
+  #pTop{display:flex;align-items:center;gap:8px;font-size:12px}
+  .dot-c{width:8px;height:8px;border-radius:50%;background:var(--danger);flex:none}
+  .dot-c.ok{background:var(--ok)}
+  #pTop .grow{flex:1}
+  #pInfo{display:flex;gap:12px;align-items:center;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:10px 13px}
+  .col{display:flex;flex-direction:column;gap:4px}
+  .lbl{font-size:9.5px;color:var(--dim);letter-spacing:.1em}
+  .val{font-size:17px;font-weight:700;line-height:1}
+  #pHpBar{width:100%;min-width:90px;height:10px;background:#243044;border-radius:5px;overflow:hidden}
+  #pHpBar i{display:block;height:100%;background:var(--ok);border-radius:5px;transition:width .3s}
+  #barrelBox{flex:1;position:relative;background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;overflow:hidden;min-height:150px}
+  #barrelSvg{position:absolute;inset:0;width:100%;height:100%}
+  #angTxt{position:absolute;left:50%;top:14px;transform:translateX(-50%);font-size:40px;font-weight:800;
+    font-variant-numeric:tabular-nums}
+  #angHint{position:absolute;left:0;right:0;bottom:10px;text-align:center;font-size:11.5px;color:var(--dim);line-height:1.7}
+  #powWrap{height:26px;background:#243044;border-radius:8px;overflow:hidden;position:relative}
+  #powFill{height:100%;width:0%;background:linear-gradient(90deg,#4ade80,#fbbf24,#ff6b6b);transition:none}
+  #powTxt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:700;text-shadow:0 1px 3px #000}
+  #ctrl{display:flex;gap:9px}
+  #dirBtn{width:86px;font-size:20px;font-weight:800}
+  #fire{flex:1;font-size:23px;font-weight:800;letter-spacing:.1em;padding:20px;
+    background:var(--danger);color:#1a0405;border-color:var(--danger)}
+  #fire.locked{background:#243044;color:var(--dim);border-color:var(--line)}
+  #fire:active{transform:scale(.98)}
+  #pMsg{position:fixed;left:50%;top:36%;transform:translate(-50%,-50%);font-size:28px;font-weight:800;
+    opacity:0;transition:opacity .25s;pointer-events:none;text-align:center;line-height:1.4}
+  #flash{position:fixed;inset:0;pointer-events:none;opacity:0;transition:opacity .18s}
+</style>
+</head>
+<body>
+
+<section id="lobby" class="screen on">
+  <div class="card">
+    <h1 class="logo">GYRO<span>MORTAR</span></h1>
+    <p class="sub dim">舉起手機決定砲管仰角，長按蓄力放開發射。<br>
+      同時出手制：每回合所有人一起瞄準，時間到齊射演算。<br>
+      指令只在回合邊界交換，網路延遲完全不影響公平性。</p>
+    <div class="field"><label>你的暱稱</label><input id="inName" maxlength="10" placeholder="1~10 個字"></div>
+    <div class="field"><label>房間碼</label><input id="inRoom" maxlength="5" placeholder="加入請輸入 5 碼，開房可留空"></div>
+    <div class="row" style="margin-top:18px">
+      <button id="btnJoin" class="primary">加入戰場</button>
+      <button id="btnHost">開房（大螢幕）</button>
+    </div>
+    <div class="hr"></div>
+    <details>
+      <summary>進階設定</summary>
+      <div class="field" style="margin-top:12px"><label>MQTT Broker（WebSocket）</label>
+        <input id="inBroker" value="wss://broker.emqx.io:8084/mqtt"></div>
+      <p class="tiny dim" style="margin:0;line-height:1.7">
+        因為是回合制，就算 broker RTT 500ms 也完全玩得動 —— 這正是這個設計的重點。</p>
+    </details>
+    <p class="tiny dim" style="margin:16px 0 0;line-height:1.7">
+      ※ 陀螺儀需要 HTTPS。沒有陀螺儀（或用電腦測試）時可用上下鍵／拖曳調整仰角。</p>
+  </div>
+</section>
+
+<section id="host" class="screen">
+  <div id="arenaWrap">
+    <canvas id="arena"></canvas>
+    <div class="ov" id="hTop">
+      <div class="pill">房間 <b id="roomTop">-----</b></div>
+      <div class="pill"><span id="hostConn">連線中…</span></div>
+      <div class="pill">回合 <b id="roundNo">0</b>/<b id="roundMax">12</b></div>
+      <div class="pill" id="windPill">風 —</div>
+      <div id="phaseBig">待命</div>
+    </div>
+    <div class="ov" id="board"></div>
+    <div class="ov" id="joinBox">
+      <div class="tiny dim">手機掃描加入</div>
+      <div id="roomBig">-----</div>
+      <img id="qr" alt="QR">
+      <div id="joinUrl" class="dim"></div>
+    </div>
+    <div class="ov" id="toast"></div>
+    <div id="hBot">
+      <button id="btnStart" class="primary">開始遊戲</button>
+      <button id="btnPanels">隱藏面板</button>
+      <div style="flex:1"></div>
+      <span id="stats"></span>
+    </div>
+  </div>
+</section>
+
+<section id="player" class="screen">
+  <div id="pTop">
+    <span class="dot-c" id="pDot"></span>
+    <span id="pConn" class="dim">連線中…</span>
+    <span class="grow"></span>
+    <span class="dim">房間 <b id="pRoom">-----</b></span>
+    <span class="dim">RTT <b id="pRtt">--</b>ms</span>
+  </div>
+
+  <div id="pInfo">
+    <div class="col" style="flex:1">
+      <span class="lbl">HP</span>
+      <div id="pHpBar"><i style="width:100%"></i></div>
+    </div>
+    <div class="col"><span class="lbl">風力</span><span class="val" id="pWind">—</span></div>
+    <div class="col"><span class="lbl">狀態</span><span class="val" id="pPhase">等待</span></div>
+  </div>
+
+  <div id="barrelBox">
+    <svg id="barrelSvg" viewBox="0 0 200 140" preserveAspectRatio="xMidYMid meet">
+      <line x1="20" y1="120" x2="180" y2="120" stroke="#243044" stroke-width="3"/>
+      <path id="arc" d="" fill="none" stroke="#3d5a80" stroke-width="1.8" stroke-dasharray="3 4"/>
+      <line id="barrel" x1="100" y1="120" x2="100" y2="60" stroke="#4cc9f0" stroke-width="9" stroke-linecap="round"/>
+      <circle cx="100" cy="120" r="13" fill="#141b2d" stroke="#4cc9f0" stroke-width="3"/>
+    </svg>
+    <div id="angTxt">45°</div>
+    <div id="angHint">按「校準」啟用陀螺儀後，前後傾斜手機調整仰角</div>
+  </div>
+
+  <div id="powWrap"><div id="powFill"></div><div id="powTxt">長按 FIRE 蓄力</div></div>
+
+  <div id="ctrl">
+    <button id="dirBtn">▶</button>
+    <button id="fire">FIRE</button>
+  </div>
+  <button id="calib" style="font-size:13px;padding:9px">校準／啟用陀螺儀</button>
+</section>
+
+<div id="flash"></div>
+<div id="pMsg"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script>window.mqtt||document.write('<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"><\/script>');</script>
+<script>
+"use strict";
+/* =========================================================================
+   GyroMortar — MQTT over WebSocket 回合制砲擊對戰
+   -------------------------------------------------------------------------
+   為什麼不吃延遲：玩家的輸入是「離散提交」（一回合一次 {方向, 仰角, 力道}），
+   不是「連續狀態」。瞄準階段有 15 秒，指令晚 500ms 到完全無感；演算與地形
+   破壞全在房主端完成，所有人看同一份結果。
+
+   Topic（NS/房間碼/…）
+     up/join/{id}   QoS1          報到（兼心跳）
+     up/fire/{id}   QoS1          本回合射擊參數，一回合一次
+     up/ping/{id}   QoS0          RTT 量測
+     up/leave/{id}  QoS1  [LWT]   斷線
+     dn/host        QoS1 retained [LWT]  房主 online/offline
+     dn/meta        QoS1 retained 回合階段、倒數、風力、玩家 HP 與提交狀態
+     dn/event       QoS1          齊射結果、擊倒、遊戲結束
+     dn/pong/{id}   QoS0
+   ========================================================================= */
+
+const NS = 'ntub-iot-gyromortar';
+const TW = 960, TH = 540;          // 邏輯戰場尺寸
+const G = 0.28;                    // 重力（每 step）
+const POWER_K = 0.18;              // 力道 → 初速
+const WIND_MAX = 0.03;             // 風的水平加速度上限
+const SIM_SPEED = 1.2;             // 每幀推進幾個 physics step
+const MAX_STEPS = 1400;
+const BLAST_R = 46, BLAST_DMG = 46;
+const MAX_HP = 100, AIM_S = 15, MAX_ROUNDS = 12, TIMEOUT_MS = 20000;
+const COLORS = ['#ff6b6b','#4cc9f0','#fbbf24','#a78bfa','#4ade80','#fb923c','#f472b6','#22d3ee'];
+
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+const now = () => Date.now();
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---------- 流量統計（本回合 / 整場） ---------- */
+const net = { inMsg:0, outMsg:0, bytes:0, roundMsg:0, totalMsg:0, rounds:0 };
+
+/* ---------- MQTT ---------- */
+let client = null, ROOM = '', MYID = Math.random().toString(36).slice(2,8), MYNAME = '';
+const T = {
+  host:()=>`${NS}/${ROOM}/dn/host`,   meta:()=>`${NS}/${ROOM}/dn/meta`,
+  event:()=>`${NS}/${ROOM}/dn/event`, pong:id=>`${NS}/${ROOM}/dn/pong/${id}`,
+  up:()=>`${NS}/${ROOM}/up/#`,
+  ujoin:id=>`${NS}/${ROOM}/up/join/${id}`,  ufire:id=>`${NS}/${ROOM}/up/fire/${id}`,
+  uping:id=>`${NS}/${ROOM}/up/ping/${id}`,  uleft:id=>`${NS}/${ROOM}/up/leave/${id}`,
+};
+function pub(topic, payload, opts){
+  if(!client || !client.connected) return;
+  const s = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  net.outMsg++; net.totalMsg++; net.roundMsg++; net.bytes += s.length + topic.length;
+  client.publish(topic, s, opts || {qos:0});
+}
+function connect(url, will, onReady, onMsg, onState){
+  client = mqtt.connect(url, { clientId:'gm_'+MYID, clean:true, keepalive:25,
+    reconnectPeriod:2000, connectTimeout:8000, will: will||undefined });
+  client.on('connect',   ()=>{ onState('已連線', true); onReady(); });
+  client.on('reconnect', ()=> onState('重新連線中…', false));
+  client.on('close',     ()=> onState('連線中斷', false));
+  client.on('error',   e=> onState('錯誤：'+e.message, false));
+  client.on('message', (t,b)=>{ net.inMsg++; net.totalMsg++; net.roundMsg++;
+    net.bytes += b.length + t.length; onMsg(t, b.toString()); });
+}
+const randRoom = () => Array.from({length:5},()=> 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random()*32)]).join('');
+
+/* =========================================================================
+   地形與物理（房主端）
+   ========================================================================= */
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0;
+  let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t;
+  return ((t^t>>>14)>>>0)/4294967296; }; }
+
+function genTerrain(seed){
+  const r = mulberry32(seed), t = new Float32Array(TW), base = TH*0.60;
+  const waves = [[0.0035,72],[0.009,34],[0.021,16],[0.048,7]]
+    .map(([f,a])=>[f, a*(0.55+r()*0.9), r()*Math.PI*2]);
+  for(let x=0;x<TW;x++){
+    let h = base;
+    for(const [f,a,p] of waves) h += Math.sin(x*f+p)*a;
+    t[x] = clamp(h, TH*0.28, TH*0.93);
+  }
+  return t;
+}
+const groundAt = (t,x) => t[clamp(Math.round(x),0,TW-1)];
+
+/* 爆炸挖坑：高度圖模型，地表落到爆炸圓的底緣 */
+function carve(t, cx, cy, R){
+  const x0 = Math.max(0, Math.floor(cx-R)), x1 = Math.min(TW-1, Math.ceil(cx+R));
+  for(let x=x0;x<=x1;x++){
+    const dx = x-cx, k = R*R-dx*dx; if(k<=0) continue;
+    const dy = Math.sqrt(k), bottom = cy+dy;
+    if(t[x] <= bottom) t[x] = Math.min(TH-2, bottom);
+  }
+}
+
+/* =========================================================================
+   HOST
+   ========================================================================= */
+const H = {
+  players:new Map(), phase:'lobby', round:0, endAt:0, wind:0, seat:0,
+  terrain:null, shells:[], fx:[], tracers:[], resolveDone:0
+};
+
+function startHost(){
+  show('host');
+  $('roomTop').textContent = ROOM; $('roomBig').textContent = ROOM;
+  $('roundMax').textContent = MAX_ROUNDS;
+  const url = location.origin + location.pathname + '?r=' + ROOM;
+  $('joinUrl').textContent = url;
+  const qr = $('qr');
+  qr.src = 'https://api.qrserver.com/v1/create-qr-code/?size=320x320&margin=8&data=' + encodeURIComponent(url);
+  qr.onerror = () => qr.style.display = 'none';
+
+  H.terrain = genTerrain(Math.floor(Math.random()*1e9));
+
+  connect($('inBroker').value.trim(),
+    { topic:T.host(), payload:'offline', qos:1, retain:true },
+    () => { client.subscribe(T.up(), {qos:1}); pub(T.host(),'online',{qos:1,retain:true}); pushMeta(); },
+    hostMsg,
+    (txt,ok)=>{ $('hostConn').textContent = txt; $('hostConn').style.color = ok?'var(--ok)':'var(--danger)'; });
+
+  setInterval(hostTick, 100);
+  setInterval(pushMeta, 1000);
+  requestAnimationFrame(render);
+}
+
+function placePlayer(p, i, n){
+  p.x = TW*(i+0.5)/Math.max(n,1) + (Math.random()*40-20);
+  p.x = clamp(p.x, 40, TW-40);
+  p.y = groundAt(H.terrain, p.x);
+}
+function reseat(){
+  const list = [...H.players.values()];
+  list.forEach((p,i)=>placePlayer(p,i,list.length));
+}
+
+function hostMsg(topic, msg){
+  const s = topic.split('/'), kind = s[3], id = s[4];
+  if(kind === 'join'){
+    let p = H.players.get(id);
+    if(!p){
+      p = { id, name:(msg||'?').slice(0,10), color:COLORS[H.seat++%COLORS.length],
+            hp:MAX_HP, score:0, x:0, y:0, shot:null, seen:now() };
+      H.players.set(id, p); reseat();
+      toast(p.name+' 加入', p.color);
+    } else { p.name = (msg||p.name).slice(0,10); p.seen = now(); }
+    pushMeta();
+  }
+  else if(kind === 'fire'){
+    const p = H.players.get(id); if(!p) return; p.seen = now();
+    if(H.phase !== 'aim' || p.hp <= 0 || p.shot) return;
+    let d; try{ d = JSON.parse(msg); }catch(e){ return; }
+    p.shot = { dir: d.dir < 0 ? -1 : 1,
+               angle: clamp(+d.angle||45, 2, 89),
+               power: clamp(+d.power||50, 5, 100) };
+    pushMeta();
+    // 全員都提交了就提早演算，不用等滿 15 秒
+    const alive = [...H.players.values()].filter(x=>x.hp>0);
+    if(alive.length && alive.every(x=>x.shot)) H.endAt = now() + 400;
+  }
+  else if(kind === 'ping'){ pub(T.pong(id), msg, {qos:0}); }
+  else if(kind === 'leave'){
+    const p = H.players.get(id);
+    if(p){ H.players.delete(id); reseat(); toast(p.name+' 離線','#93a2bb'); pushMeta(); }
+  }
+}
+
+function hostTick(){
+  const t = now();
+  for(const [id,p] of H.players)
+    if(t - p.seen > TIMEOUT_MS){ H.players.delete(id); reseat(); pushMeta(); }
+
+  if(H.phase === 'aim' && t >= H.endAt) beginResolve();
+  if(H.phase === 'resolve' && !H.shells.length && t >= H.resolveDone) endResolve();
+
+  H.fx = H.fx.filter(f => t - f.born < 900);
+  $('roundNo').textContent = H.round;
+  $('windPill').innerHTML = '風 ' + windTxt();
+  $('phaseBig').textContent =
+    H.phase === 'aim'     ? '瞄準 ' + Math.max(0, Math.ceil((H.endAt-t)/1000)) + 's' :
+    H.phase === 'resolve' ? '齊射！' :
+    H.phase === 'between' ? '準備中' :
+    H.phase === 'over'    ? '結束'   : '待命';
+}
+function windTxt(){
+  const n = Math.round(Math.abs(H.wind)/WIND_MAX*5);
+  if(!n) return '無風';
+  return (H.wind < 0 ? '◀ ' : '▶ ') + '■'.repeat(n);
+}
+
+function nextRound(){
+  if(H.phase === 'over') return;
+  const alive = [...H.players.values()].filter(p=>p.hp>0);
+  if(H.round >= MAX_ROUNDS || alive.length <= 1 && H.round > 0){
+    H.phase = 'over';
+    const rank = [...H.players.values()].sort((a,b)=>b.score-a.score);
+    const win = alive.length === 1 ? alive[0] : rank[0];
+    pub(T.event(), {t:'over', win: win?win.name:'—'}, {qos:1});
+    toast('遊戲結束<br>'+(win?esc(win.name)+' 獲勝':''), 'var(--warn)');
+    pushMeta(); return;
+  }
+  H.round++;
+  net.rounds++; net.roundMsg = 0;
+  H.wind = (Math.random()*2-1) * WIND_MAX;
+  for(const p of H.players.values()) p.shot = null;
+  H.phase = 'aim';
+  H.endAt = now() + AIM_S*1000;
+  pub(T.event(), {t:'round', n:H.round}, {qos:1});
+  pushMeta();
+}
+
+function beginResolve(){
+  H.phase = 'resolve';
+  H.shells = []; H.tracers = [];
+  for(const p of H.players.values()){
+    if(p.hp <= 0 || !p.shot) continue;
+    const a = p.shot.angle*Math.PI/180, v = p.shot.power*POWER_K;
+    H.shells.push({ owner:p.id, color:p.color,
+      x:p.x + p.shot.dir*18, y:p.y - 22,
+      vx: Math.cos(a)*v*p.shot.dir, vy: -Math.sin(a)*v, steps:0, trail:[] });
+  }
+  H.resolveDone = now() + 1200;
+  if(!H.shells.length) H.resolveDone = now() + 300;
+  pushMeta();
+}
+
+function stepShells(){
+  for(let i=H.shells.length-1;i>=0;i--){
+    const s = H.shells[i];
+    s.vy += G; s.vx += H.wind;
+    s.x += s.vx; s.y += s.vy; s.steps++;
+    if(s.steps % 2 === 0){ s.trail.push(s.x, s.y); if(s.trail.length > 300) s.trail.splice(0,2); }
+    const out = s.x < -80 || s.x > TW+80 || s.steps > MAX_STEPS;
+    const hit = s.y >= groundAt(H.terrain, s.x) && s.x >= 0 && s.x < TW;
+    if(hit || (s.y > TH+200)){ explode(s.x, Math.min(s.y, TH), s.owner); H.shells.splice(i,1); H.tracers.push(s); }
+    else if(out){ H.shells.splice(i,1); H.tracers.push(s); }
+  }
+  if(!H.shells.length && H.phase === 'resolve' && H.resolveDone < now() + 700)
+    H.resolveDone = now() + 700;
+}
+
+function explode(cx, cy, ownerId){
+  carve(H.terrain, cx, cy, BLAST_R);
+  H.fx.push({ x:cx, y:cy, r:BLAST_R, born:now() });
+  const by = H.players.get(ownerId);
+  for(const q of H.players.values()){
+    if(q.hp <= 0) continue;
+    const d = Math.hypot(q.x-cx, (q.y-14)-cy);
+    if(d > BLAST_R*1.5) continue;
+    const dmg = Math.round(BLAST_DMG * Math.max(0, 1 - d/(BLAST_R*1.5)));
+    if(dmg <= 0) continue;
+    q.hp = Math.max(0, q.hp - dmg);
+    if(by){ by.score += (by.id === q.id ? 0 : dmg); }
+    const ev = { t:'hit', by:ownerId, byName: by?by.name:'?', on:q.id, onName:q.name, dmg };
+    if(q.hp === 0){ if(by && by.id !== q.id) by.score += 40; ev.t = 'down';
+      toast(esc(by?by.name:'?')+' 擊倒 '+esc(q.name), by?by.color:'#fff'); }
+    pub(T.event(), ev, {qos:1});
+  }
+  // 地形被炸掉後，所有人重新落地
+  for(const q of H.players.values()) q.y = groundAt(H.terrain, q.x);
+}
+
+function endResolve(){
+  if(H.phase !== 'resolve') return;   // 只跑一次：hostTick 每 100ms 會重入
+  H.phase = 'between';
+  H.tracers = [];
+  pushMeta();
+  setTimeout(nextRound, 900);
+}
+
+function pushMeta(){
+  pub(T.meta(), {
+    phase:H.phase, round:H.round,
+    left: H.phase==='aim' ? Math.max(0, Math.round((H.endAt-now())/1000)) : 0,
+    wind: +(H.wind/WIND_MAX).toFixed(2),
+    players: [...H.players.values()].map(p=>({ id:p.id, n:p.name, c:p.color,
+      hp:p.hp, s:p.score, r:p.shot?1:0 })),
+  }, {qos:1, retain:true});
+}
+
+$('btnStart').onclick = () => {
+  if(!H.players.size) return toast('還沒有人加入', 'var(--warn)');
+  H.terrain = genTerrain(Math.floor(Math.random()*1e9));
+  reseat();
+  for(const p of H.players.values()){ p.hp = MAX_HP; p.score = 0; p.shot = null; }
+  H.round = 0; H.phase = 'lobby'; net.rounds = 0; net.totalMsg = 0;
+  pub(T.event(), {t:'start'}, {qos:1});
+  toast('開始！', 'var(--ok)');
+  setTimeout(nextRound, 600);
+};
+let panels = true;
+$('btnPanels').onclick = () => {
+  panels = !panels;
+  ['board','joinBox','stats'].forEach(id=> $(id).style.display = panels?'':'none');
+  $('btnPanels').textContent = panels ? '隱藏面板' : '顯示面板';
+};
+
+/* ---------- 渲染 ---------- */
+const cv = $('arena'), cx2 = cv.getContext('2d');
+let SC = 1, OX = 0, OY = 0;
+function fitCanvas(){
+  const r = cv.getBoundingClientRect(), dpr = Math.min(devicePixelRatio||1, 2);
+  cv.width = Math.round(r.width*dpr); cv.height = Math.round(r.height*dpr);
+  cx2.setTransform(dpr,0,0,dpr,0,0);
+  SC = Math.min(r.width/TW, r.height/TH);
+  OX = (r.width - TW*SC)/2; OY = (r.height - TH*SC)/2;
+}
+addEventListener('resize', fitCanvas);
+const sx = x => OX + x*SC, sy = y => OY + y*SC;
+
+function render(){
+  requestAnimationFrame(render);
+  if(!cv.clientWidth) return;
+  const dpr = Math.min(devicePixelRatio||1,2);
+  if(cv.width !== Math.round(cv.clientWidth*dpr)) fitCanvas();
+  const W = cv.clientWidth, Hh = cv.clientHeight, t = now();
+
+  if(H.phase === 'resolve'){
+    let acc = SIM_SPEED;
+    while(acc >= 1 && H.shells.length){ stepShells(); acc--; }
+    if(Math.random() < acc && H.shells.length) stepShells();
+  }
+
+  // 天空
+  const g = cx2.createLinearGradient(0,0,0,Hh);
+  g.addColorStop(0,'#0b1020'); g.addColorStop(1,'#16203a');
+  cx2.fillStyle = g; cx2.fillRect(0,0,W,Hh);
+
+  if(!H.terrain) return;
+
+  // 地形
+  cx2.beginPath(); cx2.moveTo(sx(0), sy(TH));
+  for(let x=0;x<TW;x+=2) cx2.lineTo(sx(x), sy(H.terrain[x]));
+  cx2.lineTo(sx(TW-1), sy(TH)); cx2.closePath();
+  const tg = cx2.createLinearGradient(0, sy(TH*0.2), 0, sy(TH));
+  tg.addColorStop(0,'#2d3f5e'); tg.addColorStop(1,'#161f33');
+  cx2.fillStyle = tg; cx2.fill();
+  cx2.strokeStyle = '#4a6390'; cx2.lineWidth = 2; cx2.beginPath();
+  for(let x=0;x<TW;x+=2){ const px=sx(x), py=sy(H.terrain[x]); x?cx2.lineTo(px,py):cx2.moveTo(px,py); }
+  cx2.stroke();
+
+  // 彈道
+  for(const s of H.tracers.concat(H.shells)){
+    if(s.trail.length < 4) continue;
+    cx2.strokeStyle = s.color + '66'; cx2.lineWidth = 2; cx2.beginPath();
+    cx2.moveTo(sx(s.trail[0]), sy(s.trail[1]));
+    for(let i=2;i<s.trail.length;i+=2) cx2.lineTo(sx(s.trail[i]), sy(s.trail[i+1]));
+    cx2.stroke();
+  }
+  for(const s of H.shells){
+    cx2.fillStyle = s.color;
+    cx2.beginPath(); cx2.arc(sx(s.x), sy(s.y), 5*SC+1.5, 0, 7); cx2.fill();
+  }
+
+  // 爆炸
+  for(const f of H.fx){
+    const age = (t-f.born)/900, a = 1-age;
+    cx2.globalAlpha = a;
+    cx2.fillStyle = age < .3 ? '#fff3c4' : '#fb923c';
+    cx2.beginPath(); cx2.arc(sx(f.x), sy(f.y), (f.r*(0.4+age*1.5))*SC, 0, 7); cx2.fill();
+    cx2.globalAlpha = 1;
+  }
+
+  // 砲台
+  for(const p of H.players.values()){
+    const px = sx(p.x), py = sy(p.y), dead = p.hp <= 0;
+    cx2.globalAlpha = dead ? .25 : 1;
+    cx2.fillStyle = p.color;
+    cx2.beginPath();
+    cx2.moveTo(px-17*SC, py); cx2.lineTo(px+17*SC, py);
+    cx2.lineTo(px+11*SC, py-17*SC); cx2.lineTo(px-11*SC, py-17*SC);
+    cx2.closePath(); cx2.fill();
+    cx2.fillRect(px-4*SC, py-25*SC, 8*SC, 9*SC);
+    cx2.font = `600 ${Math.max(11,13*SC)}px ui-monospace,monospace`;
+    cx2.textAlign = 'center'; cx2.fillStyle = p.color;
+    cx2.fillText(p.name, px, py + 21*SC);
+    // HP 條
+    cx2.fillStyle = '#243044'; cx2.fillRect(px-20*SC, py-36*SC, 40*SC, 6*SC);
+    cx2.fillStyle = p.hp>50?'#4ade80':p.hp>20?'#fbbf24':'#ff6b6b';
+    cx2.fillRect(px-20*SC, py-36*SC, 40*SC*(p.hp/MAX_HP), 6*SC);
+    if(H.phase==='aim' && p.shot && !dead){
+      cx2.fillStyle = '#4ade80'; cx2.font = `700 ${Math.max(10,12*SC)}px ui-monospace,monospace`;
+      cx2.fillText('✓ 已發射', px, py-44*SC);
+    }
+    cx2.globalAlpha = 1;
+  }
+  drawBoard(); drawStats();
+}
+
+function drawBoard(){
+  const rank = [...H.players.values()].sort((a,b)=>b.score-a.score);
+  $('board').innerHTML = rank.length ? rank.map(p=>{
+    const c = p.hp>50?'#4ade80':p.hp>20?'#fbbf24':'#ff6b6b';
+    return `<div class="brow"><span class="sw" style="background:${p.color}"></span>
+      <span class="nm">${esc(p.name)}</span>
+      <span class="hpbar"><i style="width:${p.hp}%;background:${c}"></i></span>
+      <span class="rdy" style="color:${p.shot?'#4ade80':'#93a2bb'}">${p.hp<=0?'✕':(p.shot?'✓':'…')}</span>
+      <span style="width:34px;text-align:right;font-weight:700">${p.score}</span></div>`;
+  }).join('') : '<div class="tiny dim" style="padding:6px 0;line-height:1.8">等待玩家加入…<br>用手機掃右邊的 QR</div>';
+}
+function drawStats(){
+  const perRound = net.rounds ? Math.round(net.totalMsg/net.rounds) : 0;
+  $('stats').innerHTML =
+    `<span class="dim">MQTT</span> 本回合 <b>${net.roundMsg}</b> 則 ・
+     每回合平均 <b>${perRound}</b> 則 ・ 全場 <b>${net.totalMsg}</b> 則 ・
+     <b>${(net.bytes/1024).toFixed(1)}</b> KB<br>
+     <span class="dim">回合制：指令只在回合邊界交換，即時同步版本同時間約需 60 msg/s ・
+     房主端演算所有彈道與地形破壞</span>`;
+}
+let toastT = 0;
+function toast(html, color){
+  const el = $('toast');
+  el.innerHTML = html; el.style.color = color||'var(--fg)'; el.style.opacity = 1;
+  clearTimeout(toastT); toastT = setTimeout(()=> el.style.opacity = 0, 1800);
+}
+
+/* =========================================================================
+   PLAYER
+   ========================================================================= */
+const P = { angle:45, dir:1, power:0, charging:false, chargeT0:0, locked:false,
+            gyro:false, hp:MAX_HP, phase:'lobby' };
+
+function startPlayer(){
+  show('player');
+  $('pRoom').textContent = ROOM;
+  connect($('inBroker').value.trim(),
+    { topic:T.uleft(MYID), payload:'', qos:1 },
+    () => {
+      client.subscribe([T.meta(), T.event(), T.host()], {qos:1});
+      client.subscribe(T.pong(MYID), {qos:0});
+      pub(T.ujoin(MYID), MYNAME, {qos:1});
+    },
+    playerMsg,
+    (txt,ok)=>{ $('pConn').textContent = txt; $('pDot').classList.toggle('ok', ok); });
+
+  addEventListener('pagehide', ()=> pub(T.uleft(MYID),'',{qos:1}));
+  setInterval(()=> pub(T.uping(MYID), String(now()), {qos:0}), 3000);
+  setInterval(()=> pub(T.ujoin(MYID), MYNAME, {qos:1}), 6000);
+  requestAnimationFrame(paintBarrel);
+}
+
+function playerMsg(topic, msg){
+  if(topic === T.meta()){
+    let m; try{ m = JSON.parse(msg); }catch(e){ return; }
+    const me = m.players.find(p=>p.id===MYID);
+    if(me){
+      P.hp = me.hp;
+      $('pHpBar').firstElementChild.style.width = me.hp + '%';
+      $('pHpBar').firstElementChild.style.background = me.hp>50?'#4ade80':me.hp>20?'#fbbf24':'#ff6b6b';
+      if(me.r) P.locked = true;
+    }
+    const w = m.wind||0;
+    $('pWind').textContent = Math.abs(w) < .08 ? '無風'
+      : (w<0?'◀':'▶') + ' ' + Math.abs(Math.round(w*5));
+    if(m.phase !== P.phase){
+      P.phase = m.phase;
+      if(m.phase === 'aim'){ P.locked = false; P.power = 0; }
+    }
+    $('pPhase').textContent =
+      m.phase==='aim' ? (P.locked ? '已發射' : m.left+'s') :
+      m.phase==='resolve' ? '演算中' : m.phase==='between' ? '準備中'
+      : m.phase==='over' ? '結束' : '等待';
+    updateFireBtn();
+  }
+  else if(topic === T.event()){
+    let e; try{ e = JSON.parse(msg); }catch(x){ return; }
+    if(e.t==='hit' || e.t==='down'){
+      if(e.by===MYID && e.on!==MYID){ flash('#4ade80'); msgBig((e.t==='down'?'擊倒 ':'命中 ')+e.onName+'<br>'+e.dmg+' 傷害','#4ade80'); }
+      else if(e.on===MYID){ flash('#ff6b6b'); msgBig(e.t==='down'?'你被擊倒':'受到 '+e.dmg+' 傷害','#ff6b6b'); vib(150); }
+    }
+    else if(e.t==='round'){ msgBig('第 '+e.n+' 回合','#4cc9f0'); }
+    else if(e.t==='over'){ msgBig('結束<br>'+e.win+' 獲勝','#fbbf24'); }
+  }
+  else if(topic === T.pong(MYID)) $('pRtt').textContent = now() - (+msg);
+  else if(topic === T.host() && msg === 'offline'){ $('pConn').textContent = '房主離線'; }
+}
+
+/* ---------- 陀螺儀：手機俯仰角直接就是砲管仰角 ---------- */
+function onOrient(e){
+  if(e.beta == null) return;
+  P.gyro = true;
+  $('angHint').textContent = '前後傾斜手機調整仰角 · 手機直立 = 90°';
+  P.angle = clamp(Math.abs(e.beta), 2, 89);
+}
+$('calib').onclick = () => {
+  const D = window.DeviceOrientationEvent;
+  if(!D){ $('angHint').textContent = '這台裝置沒有陀螺儀 · 用上下鍵或拖曳調整仰角'; return; }
+  if(typeof D.requestPermission === 'function'){
+    D.requestPermission().then(r=>{
+      if(r==='granted') addEventListener('deviceorientation', onOrient);
+      else $('angHint').textContent = '未授權動作感測 · 改用拖曳調整仰角';
+    }).catch(()=>{});
+  } else addEventListener('deviceorientation', onOrient);
+  setTimeout(()=>{ if(!P.gyro) $('angHint').textContent = '沒有偵測到陀螺儀 · 用上下鍵或拖曳調整仰角'; }, 700);
+};
+/* 備援：在砲管區域上下拖曳 / 鍵盤上下鍵 */
+const bb = $('barrelBox');
+let dragY = null;
+bb.addEventListener('pointerdown', e=>{ dragY = e.clientY; bb.setPointerCapture(e.pointerId); });
+bb.addEventListener('pointermove', e=>{
+  if(dragY === null) return;
+  P.angle = clamp(P.angle + (dragY - e.clientY)*0.4, 2, 89); dragY = e.clientY; e.preventDefault();
+});
+['pointerup','pointercancel'].forEach(ev=> bb.addEventListener(ev, ()=> dragY = null));
+addEventListener('keydown', e=>{
+  if(!$('player').classList.contains('on')) return;
+  if(e.key==='ArrowUp'){ P.angle = clamp(P.angle+2,2,89); e.preventDefault(); }
+  if(e.key==='ArrowDown'){ P.angle = clamp(P.angle-2,2,89); e.preventDefault(); }
+  if(e.key==='ArrowLeft'){ P.dir=-1; updateDir(); }
+  if(e.key==='ArrowRight'){ P.dir=1; updateDir(); }
+  if(e.code==='Space'){ e.preventDefault(); if(!P.charging) startCharge(); }
+});
+addEventListener('keyup', e=>{ if(e.code==='Space' && P.charging) releaseCharge(); });
+
+$('dirBtn').onclick = ()=>{ P.dir = -P.dir; updateDir(); };
+function updateDir(){ $('dirBtn').textContent = P.dir>0 ? '▶' : '◀'; }
+
+/* ---------- 蓄力 ---------- */
+const CHARGE_MS = 1500;
+function canFire(){ return P.phase==='aim' && !P.locked && P.hp>0; }
+function startCharge(){ if(!canFire()) return; P.charging = true; P.chargeT0 = now(); }
+function releaseCharge(){
+  if(!P.charging) return;
+  P.charging = false;
+  const power = P.power;
+  P.locked = true; updateFireBtn();
+  pub(T.ufire(MYID), { dir:P.dir, angle:+P.angle.toFixed(1), power:+power.toFixed(1) }, {qos:1});
+  msgBig('發射！<br>'+Math.round(P.angle)+'° · 力道 '+Math.round(power), '#4cc9f0');
+  vib(60);
+}
+$('fire').addEventListener('pointerdown', e=>{ e.preventDefault(); startCharge(); });
+['pointerup','pointercancel','pointerleave'].forEach(ev=>
+  $('fire').addEventListener(ev, e=>{ e.preventDefault(); releaseCharge(); }));
+function updateFireBtn(){
+  const f = $('fire'), ok = canFire();
+  f.classList.toggle('locked', !ok);
+  f.textContent = P.hp<=0 ? '陣亡' : P.locked ? '已發射' : P.phase==='aim' ? 'FIRE' : '等待回合';
+}
+
+/* ---------- 手機畫面 ---------- */
+function paintBarrel(){
+  requestAnimationFrame(paintBarrel);
+  if(P.charging){
+    const t = (now()-P.chargeT0) % (CHARGE_MS*2);
+    P.power = (t < CHARGE_MS ? t/CHARGE_MS : 2 - t/CHARGE_MS) * 95 + 5;
+    $('powFill').style.width = P.power + '%';
+    $('powTxt').textContent = Math.round(P.power);
+  } else if(!P.locked){
+    $('powFill').style.width = '0%';
+    $('powTxt').textContent = canFire() ? '長按 FIRE 蓄力' : '等待回合開始';
+  }
+  const a = P.angle*Math.PI/180, L = 62;
+  const ex = 100 + Math.cos(a)*L*P.dir, ey = 120 - Math.sin(a)*L;
+  const b = $('barrel');
+  b.setAttribute('x2', ex.toFixed(1)); b.setAttribute('y2', ey.toFixed(1));
+  b.setAttribute('stroke', P.locked ? '#4ade80' : '#4cc9f0');
+  $('angTxt').textContent = Math.round(P.angle) + '°';
+  // 預覽拋物線
+  const v = (P.charging ? P.power : 55) * 0.30;
+  let px = 100 + Math.cos(a)*20*P.dir, py = 120 - Math.sin(a)*20;
+  let vx = Math.cos(a)*v*P.dir, vy = -Math.sin(a)*v, d = `M${px.toFixed(1)},${py.toFixed(1)}`;
+  for(let i=0;i<40;i++){
+    vy += 0.9; px += vx*0.5; py += vy*0.5;
+    if(py > 135 || px < -20 || px > 220) break;
+    d += `L${px.toFixed(1)},${py.toFixed(1)}`;
+  }
+  $('arc').setAttribute('d', d);
+}
+let flashT=0, msgT=0;
+function flash(c){ const el=$('flash'); el.style.background=c; el.style.opacity=.3;
+  clearTimeout(flashT); flashT=setTimeout(()=>el.style.opacity=0,140); }
+function msgBig(html,c){ const el=$('pMsg'); el.innerHTML=html; el.style.color=c; el.style.opacity=1;
+  clearTimeout(msgT); msgT=setTimeout(()=>el.style.opacity=0,1400); }
+const vib = ms => navigator.vibrate && navigator.vibrate(ms);
+
+/* =========================================================================
+   LOBBY
+   ========================================================================= */
+function show(id){ document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on', s.id===id)); }
+$('inRoom').value = (new URLSearchParams(location.search).get('r')||'').toUpperCase();
+$('inName').value = localStorage.getItem('gm_name') || '';
+$('inRoom').addEventListener('input', e=> e.target.value = e.target.value.toUpperCase());
+$('btnJoin').onclick = () => {
+  const n = ($('inName').value||'').trim().slice(0,10), r = ($('inRoom').value||'').trim().toUpperCase();
+  if(!n) return alert('請輸入暱稱');
+  if(r.length !== 5) return alert('請輸入 5 碼房間碼');
+  localStorage.setItem('gm_name', n); MYNAME = n; ROOM = r; startPlayer();
+};
+$('btnHost').onclick = () => {
+  ROOM = ($('inRoom').value||'').trim().toUpperCase() || randRoom();
+  startHost();
+};
+updateDir(); updateFireBtn();
+</script>
+</body>
+</html>
