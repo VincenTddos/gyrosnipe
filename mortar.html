@@ -72,7 +72,14 @@
   #hBot button{pointer-events:auto}
 
   /* player */
-  #player{flex-direction:column;padding:10px;gap:9px}
+  #player{flex-direction:column;gap:9px;
+    padding:max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
+            max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left))}
+  #player button{touch-action:manipulation;-webkit-user-select:none;user-select:none}
+  #land{display:none;position:fixed;inset:0;z-index:9;background:#0b1020f2;
+    align-items:center;justify-content:center;text-align:center;font-size:17px;line-height:1.9;padding:30px}
+  @media (orientation:landscape) and (max-height:520px){ #player.on ~ #land{display:flex} }
+  #lastShot{text-align:center;font-size:11.5px;color:var(--dim);margin-top:-3px}
   #pTop{display:flex;align-items:center;gap:8px;font-size:12px}
   .dot-c{width:8px;height:8px;border-radius:50%;background:var(--danger);flex:none}
   .dot-c.ok{background:var(--ok)}
@@ -189,6 +196,7 @@
   </div>
 
   <div id="powWrap"><div id="powFill"></div><div id="powTxt">長按 FIRE 蓄力</div></div>
+  <div id="lastShot"></div>
 
   <div id="ctrl">
     <button id="dirBtn">▶</button>
@@ -199,6 +207,7 @@
 
 <div id="flash"></div>
 <div id="pMsg"></div>
+<div id="land">📱<br>請把手機轉成<b>直向</b><br><span class="tiny dim">仰角是用手機的俯仰角判定的</span></div>
 
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>window.mqtt||document.write('<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"><\/script>');</script>
@@ -238,8 +247,12 @@ const clamp = (v,a,b) => v<a?a:v>b?b:v;
 const now = () => Date.now();
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-/* ---------- 流量統計（本回合 / 整場） ---------- */
-const net = { inMsg:0, outMsg:0, bytes:0, roundMsg:0, totalMsg:0, rounds:0 };
+/* ---------- 流量統計 ----------
+   刻意把訊息分成兩類統計：
+     cmd     決定勝負的指令（QoS 1，一則都不能掉）
+     preview 瞄準預覽（QoS 0，可以掉、可以慢、晚到也無所謂）
+   這個切分就是「哪些東西真的需要可靠傳輸」的最好例子。            */
+const net = { bytes:0, cmd:0, preview:0, roundCmd:0, roundPreview:0, rounds:0 };
 
 /* ---------- MQTT ---------- */
 let client = null, ROOM = '', MYID = Math.random().toString(36).slice(2,8), MYNAME = '';
@@ -248,12 +261,18 @@ const T = {
   event:()=>`${NS}/${ROOM}/dn/event`, pong:id=>`${NS}/${ROOM}/dn/pong/${id}`,
   up:()=>`${NS}/${ROOM}/up/#`,
   ujoin:id=>`${NS}/${ROOM}/up/join/${id}`,  ufire:id=>`${NS}/${ROOM}/up/fire/${id}`,
+  uaim :id=>`${NS}/${ROOM}/up/aim/${id}`,
   uping:id=>`${NS}/${ROOM}/up/ping/${id}`,  uleft:id=>`${NS}/${ROOM}/up/leave/${id}`,
 };
+function tally(topic, len, qos){
+  net.bytes += len + topic.length;
+  const preview = /\/up\/aim\/|\/up\/ping\/|\/dn\/pong\//.test(topic) || qos === 0;
+  if(preview){ net.preview++; net.roundPreview++; } else { net.cmd++; net.roundCmd++; }
+}
 function pub(topic, payload, opts){
   if(!client || !client.connected) return;
   const s = typeof payload === 'string' ? payload : JSON.stringify(payload);
-  net.outMsg++; net.totalMsg++; net.roundMsg++; net.bytes += s.length + topic.length;
+  tally(topic, s.length, (opts&&opts.qos)||0);
   client.publish(topic, s, opts || {qos:0});
 }
 function connect(url, will, onReady, onMsg, onState){
@@ -263,9 +282,34 @@ function connect(url, will, onReady, onMsg, onState){
   client.on('reconnect', ()=> onState('重新連線中…', false));
   client.on('close',     ()=> onState('連線中斷', false));
   client.on('error',   e=> onState('錯誤：'+e.message, false));
-  client.on('message', (t,b)=>{ net.inMsg++; net.totalMsg++; net.roundMsg++;
-    net.bytes += b.length + t.length; onMsg(t, b.toString()); });
+  client.on('message', (t,b)=>{ tally(t, b.length, /\/up\/aim\/|pong/.test(t)?0:1); onMsg(t, b.toString()); });
 }
+
+/* ---------- 音效（WebAudio，無外部資源；iOS 沒有震動 API，改用聲音回饋） ---------- */
+let AC = null;
+function audioOn(){ try{ AC = AC || new (window.AudioContext||window.webkitAudioContext)();
+  if(AC.state === 'suspended') AC.resume(); }catch(e){} }
+function beep(freq, dur, type, gain){
+  if(!AC) return;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type||'sine'; o.frequency.value = freq;
+  g.gain.setValueAtTime(gain||0.08, AC.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + dur);
+  o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + dur);
+}
+function noiseBurst(dur, cut, gain){
+  if(!AC) return;
+  const n = Math.floor(AC.sampleRate*dur), buf = AC.createBuffer(1, n, AC.sampleRate), d = buf.getChannelData(0);
+  for(let i=0;i<n;i++) d[i] = (Math.random()*2-1) * (1 - i/n);
+  const src = AC.createBufferSource(); src.buffer = buf;
+  const f = AC.createBiquadFilter(); f.type='lowpass'; f.frequency.value = cut||900;
+  const g = AC.createGain(); g.gain.value = gain||0.22;
+  src.connect(f).connect(g).connect(AC.destination); src.start();
+}
+const sfxFire  = ()=>{ beep(220,.18,'square',.06); noiseBurst(.18, 1600, .12); };
+const sfxBoom  = ()=>{ noiseBurst(.55, 420, .32); beep(70,.4,'sine',.16); };
+const sfxTick  = ()=> beep(880,.04,'square',.03);
+const sfxRound = ()=>{ beep(523,.1,'triangle',.06); setTimeout(()=>beep(784,.14,'triangle',.06),110); };
 const randRoom = () => Array.from({length:5},()=> 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random()*32)]).join('');
 
 /* =========================================================================
@@ -303,11 +347,26 @@ function carve(t, cx, cy, R){
    ========================================================================= */
 const H = {
   players:new Map(), phase:'lobby', round:0, endAt:0, wind:0, seat:0,
-  terrain:null, shells:[], fx:[], tracers:[], resolveDone:0
+  terrain:null, shells:[], fx:[], tracers:[], ghosts:[], resolveDone:0, lastBeep:0
 };
+const PREVIEW_FRAC = 0.72;   // 預覽彈道只畫前 72%，落點留給玩家自己判斷
+
+/* 用跟真實砲彈完全相同的公式算預覽軌跡（確定性物理） */
+function predictPath(px, py, dir, angDeg, power, wind){
+  const a = angDeg*Math.PI/180, v = power*POWER_K;
+  let x = px + dir*18, y = py - 22, vx = Math.cos(a)*v*dir, vy = -Math.sin(a)*v;
+  const pts = [];
+  for(let i=0;i<MAX_STEPS;i++){
+    vy += G; vx += wind; x += vx; y += vy;
+    if(i % 2 === 0) pts.push(x, y);
+    if(x < -80 || x > TW+80 || y > TH+120) break;
+    if(y >= groundAt(H.terrain, x) && x >= 0 && x < TW) break;
+  }
+  return pts;
+}
 
 function startHost(){
-  show('host');
+  show('host'); audioOn();
   $('roomTop').textContent = ROOM; $('roomBig').textContent = ROOM;
   $('roundMax').textContent = MAX_ROUNDS;
   const url = location.origin + location.pathname + '?r=' + ROOM;
@@ -345,11 +404,19 @@ function hostMsg(topic, msg){
     let p = H.players.get(id);
     if(!p){
       p = { id, name:(msg||'?').slice(0,10), color:COLORS[H.seat++%COLORS.length],
-            hp:MAX_HP, score:0, x:0, y:0, shot:null, seen:now() };
+            hp:MAX_HP, score:0, x:0, y:0, shot:null, aim:null, path:null, seen:now() };
       H.players.set(id, p); reseat();
       toast(p.name+' 加入', p.color);
     } else { p.name = (msg||p.name).slice(0,10); p.seen = now(); }
     pushMeta();
+  }
+  else if(kind === 'aim'){
+    // QoS 0 的瞄準預覽：掉了無所謂，下一則 0.3 秒後就到
+    const p = H.players.get(id); if(!p) return; p.seen = now();
+    if(H.phase !== 'aim' || p.hp <= 0 || p.shot) return;
+    const c = msg.split(',');
+    p.aim = { dir:+c[0] < 0 ? -1 : 1, angle:clamp(+c[1]||45,2,89), power:clamp(+c[2]||60,5,100) };
+    p.path = predictPath(p.x, p.y, p.aim.dir, p.aim.angle, p.aim.power, H.wind);
   }
   else if(kind === 'fire'){
     const p = H.players.get(id); if(!p) return; p.seen = now();
@@ -358,6 +425,9 @@ function hostMsg(topic, msg){
     p.shot = { dir: d.dir < 0 ? -1 : 1,
                angle: clamp(+d.angle||45, 2, 89),
                power: clamp(+d.power||50, 5, 100) };
+    p.aim = p.shot;
+    p.path = predictPath(p.x, p.y, p.shot.dir, p.shot.angle, p.shot.power, H.wind);
+    sfxTick();
     pushMeta();
     // 全員都提交了就提早演算，不用等滿 15 秒
     const alive = [...H.players.values()].filter(x=>x.hp>0);
@@ -378,14 +448,24 @@ function hostTick(){
   if(H.phase === 'aim' && t >= H.endAt) beginResolve();
   if(H.phase === 'resolve' && !H.shells.length && t >= H.resolveDone) endResolve();
 
-  H.fx = H.fx.filter(f => t - f.born < 900);
+  H.fx = H.fx.filter(f => t - f.born < (f.txt ? 1600 : 900));
   $('roundNo').textContent = H.round;
   $('windPill').innerHTML = '風 ' + windTxt();
-  $('phaseBig').textContent =
-    H.phase === 'aim'     ? '瞄準 ' + Math.max(0, Math.ceil((H.endAt-t)/1000)) + 's' :
-    H.phase === 'resolve' ? '齊射！' :
-    H.phase === 'between' ? '準備中' :
-    H.phase === 'over'    ? '結束'   : '待命';
+
+  const big = $('phaseBig');
+  if(H.phase === 'aim'){
+    const left = Math.max(0, Math.ceil((H.endAt-t)/1000));
+    const alive = [...H.players.values()].filter(p=>p.hp>0);
+    const done = alive.filter(p=>p.shot).length;
+    big.innerHTML = `<span style="font-size:15px;font-weight:600;color:var(--dim)">${done}/${alive.length} 已發射　</span>瞄準 ${left}s`;
+    big.style.color = left <= 5 ? 'var(--danger)' : '';
+    if(left <= 5 && left > 0 && t - H.lastBeep > 900){ H.lastBeep = t; sfxTick(); }
+  } else {
+    big.style.color = '';
+    big.textContent = H.phase === 'resolve' ? '齊射！' :
+                      H.phase === 'between' ? '準備中' :
+                      H.phase === 'over'    ? '結束'   : '待命';
+  }
 }
 function windTxt(){
   const n = Math.round(Math.abs(H.wind)/WIND_MAX*5);
@@ -405,18 +485,21 @@ function nextRound(){
     pushMeta(); return;
   }
   H.round++;
-  net.rounds++; net.roundMsg = 0;
+  net.rounds++; net.roundCmd = 0; net.roundPreview = 0;
   H.wind = (Math.random()*2-1) * WIND_MAX;
-  for(const p of H.players.values()) p.shot = null;
+  for(const p of H.players.values()){ p.shot = null; p.aim = null; p.path = null; }
   H.phase = 'aim';
   H.endAt = now() + AIM_S*1000;
-  pub(T.event(), {t:'round', n:H.round}, {qos:1});
+  sfxRound();
+  pub(T.event(), {t:'round', n:H.round, wind:+(H.wind/WIND_MAX).toFixed(2)}, {qos:1});
   pushMeta();
 }
 
 function beginResolve(){
   H.phase = 'resolve';
-  H.shells = []; H.tracers = [];
+  H.shells = []; H.tracers = []; H.ghosts = [];
+  for(const p of H.players.values()) p.path = null;
+  if([...H.players.values()].some(p=>p.shot)) sfxFire();
   for(const p of H.players.values()){
     if(p.hp <= 0 || !p.shot) continue;
     const a = p.shot.angle*Math.PI/180, v = p.shot.power*POWER_K;
@@ -447,6 +530,7 @@ function stepShells(){
 function explode(cx, cy, ownerId){
   carve(H.terrain, cx, cy, BLAST_R);
   H.fx.push({ x:cx, y:cy, r:BLAST_R, born:now() });
+  sfxBoom();
   const by = H.players.get(ownerId);
   for(const q of H.players.values()){
     if(q.hp <= 0) continue;
@@ -456,6 +540,7 @@ function explode(cx, cy, ownerId){
     if(dmg <= 0) continue;
     q.hp = Math.max(0, q.hp - dmg);
     if(by){ by.score += (by.id === q.id ? 0 : dmg); }
+    H.fx.push({ x:q.x, y:q.y-30, born:now(), txt:'-'+dmg, color:by?by.color:'#fff' });
     const ev = { t:'hit', by:ownerId, byName: by?by.name:'?', on:q.id, onName:q.name, dmg };
     if(q.hp === 0){ if(by && by.id !== q.id) by.score += 40; ev.t = 'down';
       toast(esc(by?by.name:'?')+' 擊倒 '+esc(q.name), by?by.color:'#fff'); }
@@ -468,6 +553,7 @@ function explode(cx, cy, ownerId){
 function endResolve(){
   if(H.phase !== 'resolve') return;   // 只跑一次：hostTick 每 100ms 會重入
   H.phase = 'between';
+  H.ghosts = H.tracers;               // 上一回合的彈道留成殘影，方便下回合修正
   H.tracers = [];
   pushMeta();
   setTimeout(nextRound, 900);
@@ -488,7 +574,9 @@ $('btnStart').onclick = () => {
   H.terrain = genTerrain(Math.floor(Math.random()*1e9));
   reseat();
   for(const p of H.players.values()){ p.hp = MAX_HP; p.score = 0; p.shot = null; }
-  H.round = 0; H.phase = 'lobby'; net.rounds = 0; net.totalMsg = 0;
+  H.round = 0; H.phase = 'lobby'; H.ghosts = [];
+  net.rounds = 0; net.cmd = 0; net.preview = 0; net.bytes = 0;
+  audioOn();
   pub(T.event(), {t:'start'}, {qos:1});
   toast('開始！', 'var(--ok)');
   setTimeout(nextRound, 600);
@@ -544,6 +632,34 @@ function render(){
   for(let x=0;x<TW;x+=2){ const px=sx(x), py=sy(H.terrain[x]); x?cx2.lineTo(px,py):cx2.moveTo(px,py); }
   cx2.stroke();
 
+  // 上一回合的彈道殘影
+  for(const s of H.ghosts){
+    if(s.trail.length < 4) continue;
+    cx2.strokeStyle = s.color + '22'; cx2.lineWidth = 1.5; cx2.beginPath();
+    cx2.moveTo(sx(s.trail[0]), sy(s.trail[1]));
+    for(let i=2;i<s.trail.length;i+=2) cx2.lineTo(sx(s.trail[i]), sy(s.trail[i+1]));
+    cx2.stroke();
+  }
+
+  // 瞄準預覽（只在瞄準階段；畫前 72%，尾端淡出）
+  if(H.phase === 'aim'){
+    for(const p of H.players.values()){
+      if(p.hp <= 0 || !p.path || p.path.length < 6) continue;
+      const n = Math.floor(p.path.length/2), keep = Math.max(3, Math.floor(n*PREVIEW_FRAC));
+      cx2.setLineDash(p.shot ? [] : [7,6]);
+      cx2.lineWidth = p.shot ? 2.4 : 1.8;
+      for(let i=1;i<keep;i++){
+        cx2.globalAlpha = (p.shot ? .85 : .55) * (1 - i/keep*0.85);
+        cx2.strokeStyle = p.color;
+        cx2.beginPath();
+        cx2.moveTo(sx(p.path[(i-1)*2]), sy(p.path[(i-1)*2+1]));
+        cx2.lineTo(sx(p.path[i*2]),     sy(p.path[i*2+1]));
+        cx2.stroke();
+      }
+      cx2.globalAlpha = 1; cx2.setLineDash([]);
+    }
+  }
+
   // 彈道
   for(const s of H.tracers.concat(H.shells)){
     if(s.trail.length < 4) continue;
@@ -557,10 +673,18 @@ function render(){
     cx2.beginPath(); cx2.arc(sx(s.x), sy(s.y), 5*SC+1.5, 0, 7); cx2.fill();
   }
 
-  // 爆炸
+  // 爆炸與傷害數字
   for(const f of H.fx){
-    const age = (t-f.born)/900, a = 1-age;
-    cx2.globalAlpha = a;
+    if(f.txt){
+      const age = (t-f.born)/1600;
+      cx2.globalAlpha = 1-age;
+      cx2.fillStyle = f.color; cx2.textAlign = 'center';
+      cx2.font = `800 ${Math.max(16,22*SC)}px ui-monospace,monospace`;
+      cx2.fillText(f.txt, sx(f.x), sy(f.y) - age*46*SC);
+      cx2.globalAlpha = 1; continue;
+    }
+    const age = (t-f.born)/900;
+    cx2.globalAlpha = 1-age;
     cx2.fillStyle = age < .3 ? '#fff3c4' : '#fb923c';
     cx2.beginPath(); cx2.arc(sx(f.x), sy(f.y), (f.r*(0.4+age*1.5))*SC, 0, 7); cx2.fill();
     cx2.globalAlpha = 1;
@@ -575,17 +699,26 @@ function render(){
     cx2.moveTo(px-17*SC, py); cx2.lineTo(px+17*SC, py);
     cx2.lineTo(px+11*SC, py-17*SC); cx2.lineTo(px-11*SC, py-17*SC);
     cx2.closePath(); cx2.fill();
-    cx2.fillRect(px-4*SC, py-25*SC, 8*SC, 9*SC);
+    // 砲管：有瞄準資料就跟著轉
+    if(p.aim && !dead){
+      const a = p.aim.angle*Math.PI/180, L = 26*SC;
+      cx2.strokeStyle = p.color; cx2.lineWidth = 5*SC; cx2.lineCap = 'round';
+      cx2.beginPath(); cx2.moveTo(px, py-13*SC);
+      cx2.lineTo(px + Math.cos(a)*L*p.aim.dir, py-13*SC - Math.sin(a)*L);
+      cx2.stroke(); cx2.lineCap = 'butt';
+    } else {
+      cx2.fillRect(px-4*SC, py-25*SC, 8*SC, 9*SC);
+    }
     cx2.font = `600 ${Math.max(11,13*SC)}px ui-monospace,monospace`;
     cx2.textAlign = 'center'; cx2.fillStyle = p.color;
     cx2.fillText(p.name, px, py + 21*SC);
     // HP 條
-    cx2.fillStyle = '#243044'; cx2.fillRect(px-20*SC, py-36*SC, 40*SC, 6*SC);
+    cx2.fillStyle = '#243044'; cx2.fillRect(px-20*SC, py-52*SC, 40*SC, 6*SC);
     cx2.fillStyle = p.hp>50?'#4ade80':p.hp>20?'#fbbf24':'#ff6b6b';
-    cx2.fillRect(px-20*SC, py-36*SC, 40*SC*(p.hp/MAX_HP), 6*SC);
+    cx2.fillRect(px-20*SC, py-52*SC, 40*SC*(p.hp/MAX_HP), 6*SC);
     if(H.phase==='aim' && p.shot && !dead){
       cx2.fillStyle = '#4ade80'; cx2.font = `700 ${Math.max(10,12*SC)}px ui-monospace,monospace`;
-      cx2.fillText('✓ 已發射', px, py-44*SC);
+      cx2.fillText('✓ 已發射', px, py-60*SC);
     }
     cx2.globalAlpha = 1;
   }
@@ -604,13 +737,12 @@ function drawBoard(){
   }).join('') : '<div class="tiny dim" style="padding:6px 0;line-height:1.8">等待玩家加入…<br>用手機掃右邊的 QR</div>';
 }
 function drawStats(){
-  const perRound = net.rounds ? Math.round(net.totalMsg/net.rounds) : 0;
+  const per = net.rounds ? Math.round(net.cmd/net.rounds) : 0;
   $('stats').innerHTML =
-    `<span class="dim">MQTT</span> 本回合 <b>${net.roundMsg}</b> 則 ・
-     每回合平均 <b>${perRound}</b> 則 ・ 全場 <b>${net.totalMsg}</b> 則 ・
-     <b>${(net.bytes/1024).toFixed(1)}</b> KB<br>
-     <span class="dim">回合制：指令只在回合邊界交換，即時同步版本同時間約需 60 msg/s ・
-     房主端演算所有彈道與地形破壞</span>`;
+    `<span class="dim">MQTT 本回合</span> 指令 <b>${net.roundCmd}</b> 則（QoS 1）・
+     預覽 <b>${net.roundPreview}</b> 則（QoS 0）・ 全場 <b>${(net.bytes/1024).toFixed(1)}</b> KB<br>
+     <span class="dim">決定勝負的指令每回合平均只有 <b>${per}</b> 則，一則都不能掉；
+     瞄準預覽掉了、晚到都沒關係 ・ 即時同步版本同時間約需 60 msg/s</span>`;
 }
 let toastT = 0;
 function toast(html, color){
@@ -623,10 +755,32 @@ function toast(html, color){
    PLAYER
    ========================================================================= */
 const P = { angle:45, dir:1, power:0, charging:false, chargeT0:0, locked:false,
-            gyro:false, hp:MAX_HP, phase:'lobby' };
+            gyro:false, hp:MAX_HP, phase:'lobby', lastPower:60, lastAngle:0, lastDir:1,
+            sentAt:0, sentAng:-99, sentDir:0, sentPow:-99 };
+
+/* 螢幕防休眠：舉著手機瞄準 15 秒，iOS 會自己暗掉 */
+let wakeLock = null;
+async function keepAwake(){
+  try{ if(navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); }catch(e){}
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible' && $('player').classList.contains('on')) keepAwake();
+});
+
+/* 瞄準預覽：QoS 0，只在瞄準階段送，且值有變才送
+   充能中 5Hz（讓大螢幕的預覽彈道跟著長），平時 3Hz                   */
+function sendAim(){
+  if(P.phase !== 'aim' || P.locked || P.hp <= 0) return;
+  const t = now(), gap = P.charging ? 200 : 320;
+  if(t - P.sentAt < gap) return;
+  const pow = P.charging ? P.power : P.lastPower;
+  if(Math.abs(P.angle-P.sentAng) < 0.8 && P.dir === P.sentDir && Math.abs(pow-P.sentPow) < 2) return;
+  P.sentAt = t; P.sentAng = P.angle; P.sentDir = P.dir; P.sentPow = pow;
+  pub(T.uaim(MYID), P.dir + ',' + P.angle.toFixed(1) + ',' + pow.toFixed(0), {qos:0});
+}
 
 function startPlayer(){
-  show('player');
+  show('player'); audioOn(); keepAwake();
   $('pRoom').textContent = ROOM;
   connect($('inBroker').value.trim(),
     { topic:T.uleft(MYID), payload:'', qos:1 },
@@ -641,6 +795,7 @@ function startPlayer(){
   addEventListener('pagehide', ()=> pub(T.uleft(MYID),'',{qos:1}));
   setInterval(()=> pub(T.uping(MYID), String(now()), {qos:0}), 3000);
   setInterval(()=> pub(T.ujoin(MYID), MYNAME, {qos:1}), 6000);
+  setInterval(sendAim, 120);
   requestAnimationFrame(paintBarrel);
 }
 
@@ -659,7 +814,10 @@ function playerMsg(topic, msg){
       : (w<0?'◀':'▶') + ' ' + Math.abs(Math.round(w*5));
     if(m.phase !== P.phase){
       P.phase = m.phase;
-      if(m.phase === 'aim'){ P.locked = false; P.power = 0; }
+      if(m.phase === 'aim'){
+        P.locked = false; P.power = 0;
+        P.sentAng = -99; P.sentDir = 0; P.sentPow = -99;   // 新回合強制重送一次預覽
+      }
     }
     $('pPhase').textContent =
       m.phase==='aim' ? (P.locked ? '已發射' : m.left+'s') :
@@ -682,12 +840,18 @@ function playerMsg(topic, msg){
 
 /* ---------- 陀螺儀：手機俯仰角直接就是砲管仰角 ---------- */
 function onOrient(e){
-  if(e.beta == null) return;
+  if(e.beta == null && e.gamma == null) return;
   P.gyro = true;
   $('angHint').textContent = '前後傾斜手機調整仰角 · 手機直立 = 90°';
-  P.angle = clamp(Math.abs(e.beta), 2, 89);
+  // 橫向持握時 beta 不再代表俯仰，改用 gamma
+  const land = Math.abs(window.orientation||0) === 90 ||
+               (screen.orientation && /landscape/.test(screen.orientation.type));
+  const raw = land ? e.gamma : e.beta;
+  if(raw == null) return;
+  P.angle = clamp(Math.abs(raw), 2, 89);
 }
 $('calib').onclick = () => {
+  audioOn(); keepAwake();
   const D = window.DeviceOrientationEvent;
   if(!D){ $('angHint').textContent = '這台裝置沒有陀螺儀 · 用上下鍵或拖曳調整仰角'; return; }
   if(typeof D.requestPermission === 'function'){
@@ -723,15 +887,21 @@ function updateDir(){ $('dirBtn').textContent = P.dir>0 ? '▶' : '◀'; }
 /* ---------- 蓄力 ---------- */
 const CHARGE_MS = 1500;
 function canFire(){ return P.phase==='aim' && !P.locked && P.hp>0; }
-function startCharge(){ if(!canFire()) return; P.charging = true; P.chargeT0 = now(); }
+function startCharge(){ if(!canFire()) return; audioOn(); P.charging = true; P.chargeT0 = now(); }
 function releaseCharge(){
   if(!P.charging) return;
   P.charging = false;
   const power = P.power;
   P.locked = true; updateFireBtn();
+  P.lastPower = power; P.lastAngle = P.angle; P.lastDir = P.dir;
   pub(T.ufire(MYID), { dir:P.dir, angle:+P.angle.toFixed(1), power:+power.toFixed(1) }, {qos:1});
   msgBig('發射！<br>'+Math.round(P.angle)+'° · 力道 '+Math.round(power), '#4cc9f0');
-  vib(60);
+  sfxFire(); vib(60); updateLastShot();
+}
+function updateLastShot(){
+  $('lastShot').textContent = P.lastAngle
+    ? `上一發　${P.lastDir>0?'▶':'◀'} ${Math.round(P.lastAngle)}° · 力道 ${Math.round(P.lastPower)}`
+    : '';
 }
 $('fire').addEventListener('pointerdown', e=>{ e.preventDefault(); startCharge(); });
 ['pointerup','pointercancel','pointerleave'].forEach(ev=>
@@ -761,7 +931,7 @@ function paintBarrel(){
   b.setAttribute('stroke', P.locked ? '#4ade80' : '#4cc9f0');
   $('angTxt').textContent = Math.round(P.angle) + '°';
   // 預覽拋物線
-  const v = (P.charging ? P.power : 55) * 0.30;
+  const v = (P.charging ? P.power : P.lastPower) * 0.30;
   let px = 100 + Math.cos(a)*20*P.dir, py = 120 - Math.sin(a)*20;
   let vx = Math.cos(a)*v*P.dir, vy = -Math.sin(a)*v, d = `M${px.toFixed(1)},${py.toFixed(1)}`;
   for(let i=0;i<40;i++){
